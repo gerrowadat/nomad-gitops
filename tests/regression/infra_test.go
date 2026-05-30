@@ -49,7 +49,7 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 
 	port := freePort()
 	addr = fmt.Sprintf("http://127.0.0.1:%d", port)
-	name := fmt.Sprintf("nomad-regression-%d", os.Getpid())
+	name := fmt.Sprintf("nomad-regression-%s", randomSuffix())
 
 	runCmd := exec.Command("docker", "run", "-d", "--rm",
 		"--name", name,
@@ -163,14 +163,7 @@ func createGitRepo(t *testing.T) (repoURL, workDir, branch string) {
 	gitRun(t, workDir, "git", "config", "user.name", "Regression Test")
 	gitRun(t, workDir, "git", "remote", "add", "origin", bareDir)
 
-	// Detect the default branch name this git uses.
-	branch = "main"
-	if out, err := exec.Command("git", "-C", workDir, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
-		if b := strings.TrimSpace(string(out)); b != "" {
-			branch = b
-		}
-	}
-	// Ensure the branch is named "main" for consistency.
+	// Ensure the branch is named "main" regardless of git's init.default defaulting.
 	gitRun(t, workDir, "git", "checkout", "-b", "main")
 	branch = "main"
 

@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/gerrowadat/nomad-botherer/internal/nomad"
 )
 
@@ -107,7 +110,18 @@ func TestMetrics_APIErrorCounter(t *testing.T) {
 	cfg := baseDiffCfg()
 	cfg.NomadAddr = "http://127.0.0.1:1" // unreachable port
 	cfg.JobSelectorGlob = "anything"
-	d, reg := newTestDifferInspectable(cfg)
+
+	// Build a client that actually targets the unreachable address so that
+	// List() fails. newTestDifferInspectable always uses the global test client,
+	// so we construct the Differ manually here.
+	badAPICfg := nomadapi.DefaultConfig()
+	badAPICfg.Address = cfg.NomadAddr
+	badClient, err := nomadapi.NewClient(badAPICfg)
+	if err != nil {
+		t.Fatalf("nomadapi.NewClient: %v", err)
+	}
+	reg := prometheus.NewRegistry()
+	d := nomad.NewWithClientAndRegistry(cfg, badClient.Jobs(), reg)
 
 	_ = d.Check(map[string]string{}, "c1")
 

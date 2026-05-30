@@ -48,8 +48,6 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	defer cleanup()
-
 	cfg := nomadapi.DefaultConfig()
 	cfg.Address = testNomadAddr
 	if tok := os.Getenv("NOMAD_TOKEN"); tok != "" {
@@ -57,6 +55,7 @@ func TestMain(m *testing.M) {
 	}
 	testNomadClient, err = nomadapi.NewClient(cfg)
 	if err != nil {
+		cleanup()
 		fmt.Fprintf(os.Stderr, "regression: nomad client: %v\n", err)
 		os.Exit(1)
 	}
@@ -68,5 +67,10 @@ func TestMain(m *testing.M) {
 	}
 
 	fmt.Printf("regression: Nomad %s at %s\n", testNomadVersion, testNomadAddr)
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	if testBinaryPath != "" {
+		os.Remove(testBinaryPath)
+	}
+	os.Exit(code)
 }
