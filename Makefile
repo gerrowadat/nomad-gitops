@@ -19,7 +19,7 @@ CTL_LDFLAGS := -X main.version=$(VERSION) -s -w
 IMAGE      ?= ghcr.io/gerrowadat/$(BINARY)
 PLATFORMS  := linux/amd64,linux/arm64
 
-.PHONY: all build build-server build-ctl install install-server install-ctl test lint generate clean docker docker-push release-patch release-minor release-major version
+.PHONY: all build build-server build-ctl install install-server install-ctl test test-regression test-regression-versions lint generate clean docker docker-push release-patch release-minor release-major version
 
 all: build
 
@@ -50,6 +50,20 @@ test:
 	go test -race -timeout 60s ./...
 
 ## test-cover: run tests with coverage report
+## test-regression: run the regression suite against a real Nomad cluster (via Docker).
+## Requires Docker. Set NOMAD_VERSION to target a specific version (default: 1.9.3).
+## Set NOMAD_ADDR to use an existing cluster instead of starting one via Docker.
+## Example: make test-regression NOMAD_VERSION=1.10.2
+test-regression:
+	go test -tags=regression -timeout 15m -v -count=1 ./tests/regression/...
+
+## test-regression-versions: run the regression suite against each NOMAD_VERSIONS entry.
+## Example: make test-regression-versions NOMAD_VERSIONS="1.9.3 1.10.2"
+test-regression-versions:
+	@for ver in $(NOMAD_VERSIONS); do \
+		echo "=== Testing against Nomad $$ver ==="; \
+		NOMAD_VERSION=$$ver go test -tags=regression -timeout 15m -count=1 ./tests/regression/... || exit 1; \
+	done
 test-cover:
 	go test -race -timeout 60s -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
