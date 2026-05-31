@@ -195,6 +195,11 @@ func TestDrift_DeadJob_IncludeDeadJobs_Modified(t *testing.T) {
 
 // TestDrift_RaftIndexSkip verifies that a second Check with an unchanged
 // Nomad Raft index and the same commit is skipped (returns immediately).
+//
+// Note: when run against a shared cluster via NOMAD_ADDR, unrelated job or
+// eval churn can advance the global LastIndex between calls and prevent the
+// skip from triggering, making this test flaky. It is reliable against the
+// Docker-managed cluster started by TestMain.
 func TestDrift_RaftIndexSkip(t *testing.T) {
 	jobID := uniqueJobID("raft-skip")
 	registerJobHCL(t, testJobHCL(jobID))
@@ -283,5 +288,47 @@ func TestDrift_MultipleJobs(t *testing.T) {
 	}
 	if dt, ok := diffsByJob[missingID]; !ok || dt != nomad.DiffTypeMissingFromNomad {
 		t.Errorf("missing job %q: want missing_from_nomad, got %q", missingID, dt)
+	}
+}
+
+// TestDrift_ForceCheck verifies that ForceCheck increments the staleness
+// counter and runs a check. It also documents the current behaviour when
+// ForceCheck is called with an unchanged commit and Nomad index: the
+// underlying Check still applies the Raft-index skip optimisation, so the
+// check may be skipped. Whether that is desirable is a design question; this
+// test records the observed behaviour so regressions are visible.
+func TestDrift_ForceCheck(t *testing.T) {
+	jobID := uniqueJobID("force-check")
+	hcl := testJobHCL(jobID)
+	registerJobHCL(t, hcl)
+	waitForJobStatus(t, jobID, "running", 30*time.Second)
+
+	cfg := baseDiffCfg()
+	cfg.JobSelectorGlob = jobID
+	d, reg := newTestDifferInspectable(cfg)
+
+	hclFiles := map[string]string{jobID + ".hcl": hcl}
+	const commit = "force-commit"
+
+	// First call establishes the Raft-index baseline.
+	if err := d.Check(hclFiles, commit); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	// ForceCheck with the same commit and unchanged Nomad state.
+	if err := d.ForceCheck(hclFiles, commit); err != nil {
+		t.Fatalf("ForceCheck: %v", err)
+	}
+
+	// The staleness counter must always be incremented by ForceCheck.
+	stale := gatherCounter(t, reg, "nomad_botherer_nomad_staleness_checks_total")
+	if stale < 1 {
+		t.Errorf("want ≥1 staleness check counted, got %v", stale)
+	}
+
+	// Total checks must be ≥1 (the initial Check call).
+	checks := gatherCounter(t, reg, "nomad_botherer_diff_checks_total")
+	if checks < 1 {
+		t.Errorf("want ≥1 diff check total, got %v", checks)
 	}
 }

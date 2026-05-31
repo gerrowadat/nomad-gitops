@@ -136,6 +136,11 @@ func TestMetrics_APIErrorCounter(t *testing.T) {
 
 // TestMetrics_SkipOptimizationCounter verifies that repeated Check calls with
 // the same commit and unchanged Nomad index increment diff_checks_skipped_total.
+//
+// Note: when run against a shared cluster via NOMAD_ADDR, unrelated activity
+// can advance the global LastIndex between calls and prevent skips from
+// triggering. This test is reliable against the Docker-managed cluster started
+// by TestMain.
 func TestMetrics_SkipOptimizationCounter(t *testing.T) {
 	jobID := uniqueJobID("skip-counter")
 	registerJobHCL(t, testJobHCL(jobID))
@@ -189,6 +194,9 @@ func TestMetrics_FirstSeenTimestamps(t *testing.T) {
 	}
 
 	// Second check (different commit to bypass skip): drift persists, timestamp unchanged.
+	// gatherCounter sums all samples in the family; this works correctly here because
+	// there is exactly one drifting job in this registry. A future test that adds a
+	// second drift entry to the same registry would need label-filtered lookup instead.
 	if err := d.Check(map[string]string{jobID + ".hcl": hcl}, "c2"); err != nil {
 		t.Fatalf("Check c2: %v", err)
 	}

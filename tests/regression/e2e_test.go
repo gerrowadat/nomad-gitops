@@ -21,8 +21,8 @@ import (
 )
 
 // TestE2E_StartupLifecycle verifies that:
-//   - /healthz returns 503 before startup completes
 //   - /healthz returns 200 once the initial git clone and diff check finish
+//     (startBotherer blocks until this transition occurs)
 //   - the response body is valid JSON with the expected fields
 func TestE2E_StartupLifecycle(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)

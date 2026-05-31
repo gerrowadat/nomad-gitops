@@ -49,7 +49,6 @@ install-ctl:
 test:
 	go test -race -timeout 60s ./...
 
-## test-cover: run tests with coverage report
 ## test-regression: run the regression suite against a real Nomad cluster (via Docker).
 ## Requires Docker. Set NOMAD_VERSION to target a specific version (default: 1.9.3).
 ## Set NOMAD_ADDR to use an existing cluster instead of starting one via Docker.
@@ -64,6 +63,8 @@ test-regression-versions:
 		echo "=== Testing against Nomad $$ver ==="; \
 		NOMAD_VERSION=$$ver go test -tags=regression -timeout 15m -count=1 ./tests/regression/... || exit 1; \
 	done
+
+## test-cover: run tests with coverage report
 test-cover:
 	go test -race -timeout 60s -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html

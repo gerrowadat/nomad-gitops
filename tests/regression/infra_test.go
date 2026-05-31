@@ -3,6 +3,7 @@
 package regression
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -40,11 +41,12 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 	image := "hashicorp/nomad:" + version
 
 	// Pull first so a missing/wrong version produces a clear error.
+	var pullStderr bytes.Buffer
 	pull := exec.Command("docker", "pull", image)
 	pull.Stdout = io.Discard
-	pull.Stderr = io.Discard
+	pull.Stderr = &pullStderr
 	if err := pull.Run(); err != nil {
-		return "", nil, fmt.Errorf("docker pull %s: %w", image, err)
+		return "", nil, fmt.Errorf("docker pull %s: %w\n%s", image, err, pullStderr.String())
 	}
 
 	port := freePort()
@@ -96,6 +98,11 @@ func waitForNomadReady(addr string, timeout time.Duration) error {
 }
 
 // freePort returns an unused TCP port on loopback.
+// There is an inherent TOCTOU race between closing the listener here and the
+// caller binding to the port. This is unavoidable with the binary-startup
+// protocol used by startBotherer; in practice it is benign on developer
+// machines and dedicated CI hosts, but can cause rare port-conflict flakes in
+// heavily loaded environments.
 func freePort() int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -157,7 +164,9 @@ func createGitRepo(t *testing.T) (repoURL, workDir, branch string) {
 	gitRun(t, "", "git", "init", "--bare", bareDir)
 
 	// Create a working copy.
-	os.MkdirAll(workDir, 0o755)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", workDir, err)
+	}
 	gitRun(t, workDir, "git", "init")
 	gitRun(t, workDir, "git", "config", "user.email", "regression@test.invalid")
 	gitRun(t, workDir, "git", "config", "user.name", "Regression Test")

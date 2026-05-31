@@ -274,43 +274,31 @@ func TestSecurity_GRPC_ValidKey(t *testing.T) {
 	}
 }
 
-// TestSecurity_GRPC_TimingResistance measures that wrong-key responses take
-// similar time regardless of how much the key overlaps with the correct one.
-// This guards against a naive string-prefix comparison that would leak the
-// key length or first differing byte through timing.
-func TestSecurity_GRPC_TimingResistance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing test skipped in short mode")
-	}
-
+// TestSecurity_GRPC_AuthUnderLoad fires 100 concurrent wrong-key requests and
+// verifies they all return Unauthenticated without panics. Timing-based
+// constant-time comparison is not measurable over a loopback gRPC connection
+// (round-trip latency swamps the signal); use static analysis or code review
+// to confirm crypto/subtle.ConstantTimeCompare is used in grpcserver.
+func TestSecurity_GRPC_AuthUnderLoad(t *testing.T) {
 	correctKey := strings.Repeat("a", 32)
 	client, _ := newGRPCTestServer(t, correctKey)
 
-	measure := func(key string) time.Duration {
-		const reps = 30
-		var total time.Duration
-		for i := 0; i < reps; i++ {
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
 			ctx := metadata.NewOutgoingContext(
 				context.Background(),
-				metadata.Pairs("authorization", "Bearer "+key),
+				metadata.Pairs("authorization", fmt.Sprintf("Bearer wrong-%d", i)),
 			)
-			start := time.Now()
-			client.GetVersion(ctx, &grpcapi.GetVersionRequest{})
-			total += time.Since(start)
-		}
-		return total / reps
+			_, err := client.GetVersion(ctx, &grpcapi.GetVersionRequest{})
+			if code := status.Code(err); code != codes.Unauthenticated {
+				t.Errorf("goroutine %d: want Unauthenticated, got %v", i, code)
+			}
+		}(i)
 	}
-
-	// "far" key shares no prefix; "near" key differs only in the last byte.
-	tFar := measure(strings.Repeat("z", 32))
-	tNear := measure(strings.Repeat("a", 31) + "z")
-
-	// A ratio outside [0.1, 10] would suggest early-exit comparison.
-	ratio := float64(tNear) / float64(tFar)
-	if ratio > 10 || ratio < 0.1 {
-		t.Errorf("timing ratio near/far = %.2f — possible non-constant-time comparison "+
-			"(near=%v far=%v)", ratio, tNear, tFar)
-	}
+	wg.Wait()
 }
 
 // TestSecurity_HCL_PathTraversalInJobID verifies that job IDs containing
@@ -381,7 +369,10 @@ func newGRPCTestServer(t *testing.T, apiKey string) (grpcapi.NomadBothererClient
 		t.Fatalf("listen: %v", err)
 	}
 	go grpcSrv.Serve(lis)
-	t.Cleanup(func() { grpcSrv.GracefulStop() })
+	t.Cleanup(func() {
+		grpcSrv.GracefulStop()
+		lis.Close()
+	})
 
 	conn, err := grpc.NewClient(lis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -418,10 +409,3 @@ func minimalPushPayload(branch string) []byte {
 	}`, branch))
 }
 
-// min is a local helper for pre-1.21 Go compat (though this module requires 1.22+).
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
