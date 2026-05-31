@@ -34,6 +34,16 @@ Three kinds of drift are tracked:
   - [`/metrics`](#metrics)
   - [Sample Prometheus configuration](#sample-prometheus-configuration)
 - [Docker](#docker)
+- [Testing](#testing)
+  - [Unit tests](#unit-tests)
+  - [Regression tests](#regression-tests)
+    - [Prerequisites](#prerequisites)
+    - [Running against a Docker-managed Nomad](#running-against-a-docker-managed-nomad)
+    - [Targeting a specific Nomad version](#targeting-a-specific-nomad-version)
+    - [Testing against multiple versions](#testing-against-multiple-versions)
+    - [Using an existing cluster](#using-an-existing-cluster)
+    - [What the suite covers](#what-the-suite-covers)
+    - [Nomad version compatibility](#nomad-version-compatibility)
 - [Development](#development)
 
 ---
@@ -656,6 +666,113 @@ Supported platforms: `linux/amd64`, `linux/arm64` (Raspberry Pi 4+).
 
 ---
 
+## Testing
+
+### Unit tests
+
+The unit test suite runs against mocked interfaces and requires no external
+infrastructure. It runs automatically in CI on every push.
+
+```bash
+make test         # go test -race ./...
+make test-cover   # run tests and generate coverage.html
+```
+
+### Regression tests
+
+The regression suite lives in `tests/regression/` and is excluded from normal
+`go test ./...` runs by the `//go:build regression` build tag. It starts a real
+Nomad cluster (via Docker or a pre-existing address) and exercises the full
+request path: drift detection, job selection, Prometheus metrics, HTTP and gRPC
+endpoints, webhook HMAC verification, and the compiled binary's startup
+lifecycle.
+
+Run it before cutting a release to verify that the build behaves correctly
+against a real cluster.
+
+#### Prerequisites
+
+- **Docker** — the suite pulls and starts `hashicorp/nomad:<version>` automatically. The container runs with `--privileged` to allow Nomad's `raw_exec` driver (used by test jobs) to manage cgroups.
+- **Go 1.25+**
+
+#### Running against a Docker-managed Nomad
+
+```bash
+make test-regression
+```
+
+This pulls the default Nomad image (`1.9.3`), starts a dev-mode cluster, runs
+all tests, and stops the container on exit. The full suite takes roughly 5–10
+minutes.
+
+#### Targeting a specific Nomad version
+
+```bash
+NOMAD_VERSION=1.10.2 make test-regression
+```
+
+Or directly:
+
+```bash
+NOMAD_VERSION=1.10.2 go test -tags=regression -timeout 15m -v -count=1 ./tests/regression/...
+```
+
+`NOMAD_VERSION` must match a tag on the official
+[`hashicorp/nomad`](https://hub.docker.com/r/hashicorp/nomad/tags) Docker image.
+
+#### Testing against multiple versions
+
+```bash
+make test-regression-versions NOMAD_VERSIONS="1.8.7 1.9.3 1.10.2"
+```
+
+This iterates over the list and runs the full suite against each version in
+sequence, stopping on the first failure.
+
+#### Using an existing cluster
+
+If you already have a Nomad cluster running, point the suite at it instead of
+starting Docker:
+
+```bash
+NOMAD_ADDR=http://my-nomad.internal:4646 make test-regression
+```
+
+When `NOMAD_ADDR` is set, Docker is not used at all. `NOMAD_TOKEN` is also
+honoured if the cluster requires ACL authentication.
+
+The suite clears all Nomad SDK environment variables (`NOMAD_ADDR`,
+`NOMAD_TOKEN`, `NOMAD_NAMESPACE`, `NOMAD_REGION`, and the TLS set) from the
+process environment before any tests run, then restores them on exit. This
+prevents env vars from a developer's shell from leaking into subprocesses
+spawned by the E2E tests (the compiled binary, Docker commands). The captured
+values are still used to configure the test cluster connection.
+
+Note that Raft-index skip tests (`TestDrift_RaftIndexSkip`,
+`TestMetrics_SkipOptimizationCounter`) can be flaky against a shared cluster
+because unrelated job or eval activity advances the global `LastIndex` between
+calls. They are reliable against the isolated Docker-managed cluster.
+
+#### What the suite covers
+
+| File | What is tested |
+|------|----------------|
+| `drift_test.go` | All three DiffTypes (`modified`, `missing_from_nomad`, `missing_from_hcl`); dead-job handling (stop-only and purge modes); Raft-index skip optimisation; commit-change bypass; multi-job checks; `ForceCheck` staleness counter |
+| `selection_test.go` | Exact glob; wildcard glob; no-match glob; meta-key presence/absence; union selection (both criteria); no criteria configured |
+| `metrics_test.go` | All expected metric names registered at construction; gauge values match observed drift; skip counter; first-seen timestamps (set, stable, cleared); parse-error and non-job-skip counters |
+| `security_test.go` | Webhook HMAC-SHA256 (valid, invalid, missing, wrong algorithm, large body, concurrent flood, no-secret mode); gRPC auth (missing, wrong, correct key; 100-concurrent load); path-traversal job IDs; very large HCL files; HTML XSS escaping in the index page |
+| `e2e_test.go` | Binary lifecycle (503→200 on startup); drift detected over HTTP and `/diffs`; webhook triggers refresh without waiting for next poll interval; gRPC `GetDiffs`, `GetStatus`, `TriggerRefresh`; `/metrics` endpoint content |
+
+#### Nomad version compatibility
+
+[`docs/nomad-versions.md`](docs/nomad-versions.md) documents which Nomad
+versions have been verified against each nomad-botherer release by running the
+full regression suite. The table is updated manually when a release is cut.
+`tests/regression/compat.go` holds a `TestedVersions` slice that mirrors the
+table in code.
+
+---
+
 ## Development
 
 ### Local development with .env
@@ -682,9 +799,14 @@ make build-ctl    # compile just nbctl
 make install      # go install both binaries to $GOPATH/bin
 make test         # go test -race ./...
 make test-cover   # run tests and generate coverage.html
+make test-regression                              # regression suite against Nomad 1.9.3 (Docker)
+make test-regression NOMAD_VERSION=1.10.2        # regression suite against a specific version
+make test-regression-versions NOMAD_VERSIONS="1.9.3 1.10.2"  # test against multiple versions
 make lint         # go vet ./...
 make clean        # remove build artefacts
 ```
+
+See [Testing](#testing) for the full regression suite documentation.
 
 ### Simulating a webhook
 
