@@ -293,6 +293,9 @@ func (w *Watcher) buildAuth() (transport.AuthMethod, error) {
 		if err != nil {
 			return nil, fmt.Errorf("loading SSH key from %s: %w", w.cfg.GitSSHKeyPath, err)
 		}
+		if err := w.setSSHHostKeyCallback(auth); err != nil {
+			return nil, err
+		}
 		return auth, nil
 	}
 	if w.cfg.GitToken != "" {
@@ -302,6 +305,30 @@ func (w *Watcher) buildAuth() (transport.AuthMethod, error) {
 		}, nil
 	}
 	return nil, nil // anonymous / SSH agent
+}
+
+// setSSHHostKeyCallback configures host key verification on auth.
+// When --git-ssh-known-hosts is set the named file is required; if it cannot
+// be opened, an error is returned. Without the flag go-git's default known_hosts
+// locations (~/..ssh/known_hosts, /etc/ssh/ssh_known_hosts) are tried. If none
+// are found, verification is skipped and a warning is logged.
+func (w *Watcher) setSSHHostKeyCallback(auth *gitssh.PublicKeys) error {
+	if w.cfg.GitSSHKnownHostsFile != "" {
+		cb, err := gitssh.NewKnownHostsCallback(w.cfg.GitSSHKnownHostsFile)
+		if err != nil {
+			return fmt.Errorf("loading known_hosts from %s: %w", w.cfg.GitSSHKnownHostsFile, err)
+		}
+		auth.HostKeyCallback = cb
+		return nil
+	}
+	cb, err := gitssh.NewKnownHostsCallback()
+	if err != nil {
+		slog.Warn("SSH host key verification disabled: no known_hosts file found; "+
+			"set --git-ssh-known-hosts / GIT_SSH_KNOWN_HOSTS to enable verification", "err", err)
+		return nil
+	}
+	auth.HostKeyCallback = cb
+	return nil
 }
 
 func headCommit(repo *git.Repository) (string, error) {

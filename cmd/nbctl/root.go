@@ -72,7 +72,7 @@ func (cfg *rootConfig) dial() (grpcapi.NomadBothererClient, func(), error) {
 
 	var tc credentials.TransportCredentials
 	if cfg.useTLS {
-		tc = credentials.NewTLS(&tls.Config{})
+		tc = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	} else {
 		tc = insecure.NewCredentials()
 	}

@@ -108,12 +108,21 @@ func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, 
 	return s
 }
 
+// newHTTPServer constructs the http.Server with timeouts to prevent slowloris
+// and other connection-exhaustion attacks.
+func (s *Server) newHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              s.cfg.ListenAddr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
+}
+
 // Run starts the HTTP server and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
-	srv := &http.Server{
-		Addr:    s.cfg.ListenAddr,
-		Handler: s.mux,
-	}
+	srv := s.newHTTPServer()
 
 	go func() {
 		<-ctx.Done()
@@ -322,6 +331,10 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWebhook() http.HandlerFunc {
+	if s.cfg.WebhookSecret == "" {
+		slog.Warn("Webhook secret is empty: webhook endpoint accepts unsigned requests. " +
+			"Set --webhook-secret / WEBHOOK_SECRET to require HMAC-SHA256 signatures.")
+	}
 	hook, err := webhookgithub.New(webhookgithub.Options.Secret(s.cfg.WebhookSecret))
 	if err != nil {
 		// This only errors with an invalid secret; log and serve a stub.

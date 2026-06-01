@@ -14,9 +14,10 @@ type Config struct {
 	Branch        string
 	PollInterval  time.Duration
 	HCLDir        string
-	GitToken      string
-	GitSSHKeyPath string
-	GitSSHKeyPass string
+	GitToken             string
+	GitSSHKeyPath        string
+	GitSSHKeyPass        string
+	GitSSHKnownHostsFile string
 
 	// Nomad
 	NomadAddr      string
@@ -65,6 +66,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.StringVar(&c.GitToken, "git-token", envOrDefault("GIT_TOKEN", ""), "Git HTTP token for private repos (e.g. GitHub PAT)")
 	fs.StringVar(&c.GitSSHKeyPath, "git-ssh-key", envOrDefault("GIT_SSH_KEY", ""), "Path to SSH private key for git auth")
 	fs.StringVar(&c.GitSSHKeyPass, "git-ssh-key-password", envOrDefault("GIT_SSH_KEY_PASSWORD", ""), "SSH private key passphrase")
+	fs.StringVar(&c.GitSSHKnownHostsFile, "git-ssh-known-hosts", envOrDefault("GIT_SSH_KNOWN_HOSTS", ""), "Path to known_hosts file for SSH host key verification (defaults to ~/.ssh/known_hosts; set to empty string to use system defaults)")
 
 	fs.StringVar(&c.NomadAddr, "nomad-addr", envOrDefault("NOMAD_ADDR", "http://127.0.0.1:4646"), "Nomad API address")
 	fs.StringVar(&c.NomadToken, "nomad-token", envOrDefault("NOMAD_TOKEN", ""), "Nomad ACL token")

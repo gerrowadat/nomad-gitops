@@ -192,6 +192,7 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--git-token` | `GIT_TOKEN` | | HTTP token for private repos (GitHub PAT etc.) |
 | `--git-ssh-key` | `GIT_SSH_KEY` | | Path to SSH private key |
 | `--git-ssh-key-password` | `GIT_SSH_KEY_PASSWORD` | | SSH key passphrase |
+| `--git-ssh-known-hosts` | `GIT_SSH_KNOWN_HOSTS` | `~/.ssh/known_hosts` | Path to known_hosts file for SSH host key verification; required when using SSH auth. Defaults to the system known_hosts locations. Omit to allow the default search, or set explicitly to a specific file. |
 | `--nomad-addr` | `NOMAD_ADDR` | `http://127.0.0.1:4646` | Nomad API address |
 | `--nomad-token` | `NOMAD_TOKEN` | | Nomad ACL token |
 | `--nomad-namespace` | `NOMAD_NAMESPACE` | `default` | Nomad namespace |

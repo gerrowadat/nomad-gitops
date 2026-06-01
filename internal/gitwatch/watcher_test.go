@@ -3,6 +3,7 @@ package gitwatch
 import (
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/prometheus/client_golang/prometheus"
@@ -259,6 +261,42 @@ func TestBuildAuth_SSHKey_NotFound(t *testing.T) {
 	_, err := w.buildAuth()
 	if err == nil {
 		t.Error("expected error for non-existent SSH key path")
+	}
+}
+
+// ── setSSHHostKeyCallback ─────────────────────────────────────────────────────
+
+func TestSetSSHHostKeyCallback_ExplicitFile_Good(t *testing.T) {
+	f, err := os.CreateTemp("", "known_hosts_*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(f.Name())
+	f.Close()
+
+	w := &Watcher{cfg: &config.Config{GitSSHKnownHostsFile: f.Name()}}
+	auth := &gitssh.PublicKeys{}
+	if err := w.setSSHHostKeyCallback(auth); err != nil {
+		t.Fatalf("unexpected error with valid known_hosts file: %v", err)
+	}
+	if auth.HostKeyCallback == nil {
+		t.Error("HostKeyCallback should be set after loading a valid known_hosts file")
+	}
+}
+
+func TestSetSSHHostKeyCallback_ExplicitFile_Missing(t *testing.T) {
+	w := &Watcher{cfg: &config.Config{GitSSHKnownHostsFile: "/nonexistent/known_hosts"}}
+	auth := &gitssh.PublicKeys{}
+	if err := w.setSSHHostKeyCallback(auth); err == nil {
+		t.Error("expected error when --git-ssh-known-hosts points to a missing file")
+	}
+}
+
+func TestSetSSHHostKeyCallback_NoConfig_DoesNotError(t *testing.T) {
+	w := &Watcher{cfg: &config.Config{}}
+	auth := &gitssh.PublicKeys{}
+	if err := w.setSSHHostKeyCallback(auth); err != nil {
+		t.Errorf("setSSHHostKeyCallback should not error when no known_hosts config is set: %v", err)
 	}
 }
 
