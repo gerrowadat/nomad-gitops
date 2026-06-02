@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,25 @@ const (
 	DiffTypeMissingFromHCL DiffType = "missing_from_hcl"
 )
 
+// SelectionReason describes why a job was included in the watched set.
+type SelectionReason string
+
+const (
+	// SelectionReasonGlob means the job was selected by the job-selector-glob pattern.
+	SelectionReasonGlob SelectionReason = "glob"
+	// SelectionReasonMeta means the job was selected by the managed-meta-prefix key.
+	SelectionReasonMeta SelectionReason = "meta"
+	// SelectionReasonBoth means the job matched both the glob and the meta key.
+	SelectionReasonBoth SelectionReason = "both"
+)
+
+// SelectedJob records a job that matched the configured selection criteria
+// and the reason it was included.
+type SelectedJob struct {
+	JobID  string          `json:"job_id"`
+	Reason SelectionReason `json:"selection_reason"`
+}
+
 // JobDiff describes a single divergence between the git repo and Nomad.
 type JobDiff struct {
 	JobID    string   `json:"job_id"`
@@ -70,9 +90,10 @@ type Differ struct {
 
 	mu              sync.RWMutex
 	diffs           []JobDiff
+	selectedJobs    []SelectedJob
 	lastCheckTime   time.Time
 	lastCommit      string
-	lastNomadIndex  uint64            // Raft index from the last successful List(); protected by mu
+	lastNomadIndex  uint64               // Raft index from the last successful List(); protected by mu
 	driftFirstSeen  map[string]time.Time // key: driftKey(jobID, diffType); protected by mu
 
 	hclParseErrors      prometheus.Counter
@@ -186,20 +207,52 @@ func NewWithClientAndRegistry(cfg *config.Config, jobs NomadJobsClient, reg prom
 	return newDifferBase(jobs, cfg.NomadNamespace, cfg.IncludeDeadJobs, cfg.JobSelectorGlob, cfg.ManagedMetaPrefix, reg)
 }
 
-// jobIsSelected reports whether a job should be watched. A job is selected when
-// its ID matches the configured glob pattern, or when its meta map contains
-// "<managedMetaPrefix>_managed" set to "true". If both are empty, no jobs
-// are selected.
-func (d *Differ) jobIsSelected(jobID string, meta map[string]string) bool {
-	if d.jobSelectorGlob != "" {
-		if matched, _ := path.Match(d.jobSelectorGlob, jobID); matched {
-			return true
-		}
+// jobSelectionReason reports whether a job should be watched and, if so, why.
+// A job is selected when its ID matches the configured glob pattern, when its
+// meta map contains "<managedMetaPrefix>_managed" set to "true", or both.
+// Returns false and an empty reason when neither criterion matches.
+func (d *Differ) jobSelectionReason(jobID string, meta map[string]string) (bool, SelectionReason) {
+	glob := d.jobSelectorGlob != ""
+	if glob {
+		matched, _ := path.Match(d.jobSelectorGlob, jobID)
+		glob = matched
 	}
-	if d.managedMetaPrefix != "" && meta[d.managedMetaPrefix+"_managed"] == "true" {
-		return true
+	meta_ := d.managedMetaPrefix != "" && meta[d.managedMetaPrefix+"_managed"] == "true"
+	switch {
+	case glob && meta_:
+		return true, SelectionReasonBoth
+	case glob:
+		return true, SelectionReasonGlob
+	case meta_:
+		return true, SelectionReasonMeta
+	default:
+		return false, ""
 	}
-	return false
+}
+
+// mergeSelectionReason returns the combined reason when a job is seen from
+// multiple sources (e.g. HCL phase and Nomad phase). Any combination of two
+// different non-empty reasons upgrades to SelectionReasonBoth.
+func mergeSelectionReason(existing, new SelectionReason) SelectionReason {
+	if existing == "" {
+		return new
+	}
+	if existing == new {
+		return existing
+	}
+	return SelectionReasonBoth
+}
+
+// SelectedJobs returns a snapshot of the jobs that matched the configured
+// selection criteria during the last check, together with the reason each
+// matched. The second and third return values are the same last-check time and
+// commit as Diffs().
+func (d *Differ) SelectedJobs() ([]SelectedJob, time.Time, string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	result := make([]SelectedJob, len(d.selectedJobs))
+	copy(result, d.selectedJobs)
+	return result, d.lastCheckTime, d.lastCommit
 }
 
 // Check compares the given HCL files (path → content) against the live Nomad
@@ -242,6 +295,9 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 	// Parse all HCL files via the Nomad API.
 	hclJobs := make(map[string]*nomadapi.Job) // jobID → parsed job
 	hclJobFile := make(map[string]string)      // jobID → source HCL file path
+	// selReasons accumulates the selection reason for each matched job across
+	// both the HCL and Nomad phases, deduplicating by job ID.
+	selReasons := make(map[string]SelectionReason)
 
 	for filename, content := range hclFiles {
 		if !jobBlockRe.MatchString(content) {
@@ -261,11 +317,13 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 			continue
 		}
 		jobID := *job.ID
-		if !d.jobIsSelected(jobID, job.Meta) {
+		selected, reason := d.jobSelectionReason(jobID, job.Meta)
+		if !selected {
 			slog.Debug("Skipping job not matching selection criteria", "job", jobID, "file", filename)
 			d.jobsSkippedBySel.WithLabelValues("hcl").Inc()
 			continue
 		}
+		selReasons[jobID] = mergeSelectionReason(selReasons[jobID], reason)
 		hclJobs[jobID] = job
 		hclJobFile[jobID] = filename
 		slog.Debug("Parsed HCL file", "file", filename, "job_id", jobID)
@@ -350,10 +408,12 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		// Meta is populated because the List call includes ?meta=true.
 		meta := j.Meta
 
-		if !d.jobIsSelected(j.ID, meta) {
+		selected, reason := d.jobSelectionReason(j.ID, meta)
+		if !selected {
 			d.jobsSkippedBySel.WithLabelValues("nomad").Inc()
 			continue
 		}
+		selReasons[j.ID] = mergeSelectionReason(selReasons[j.ID], reason)
 		if _, ok := hclJobs[j.ID]; !ok {
 			diffs = append(diffs, JobDiff{
 				JobID:    j.ID,
@@ -371,8 +431,16 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		currentKeys[driftKey(diff.JobID, string(diff.DiffType))] = struct{}{}
 	}
 
+	// Build sorted SelectedJob slice from the accumulated reasons map.
+	selectedJobs := make([]SelectedJob, 0, len(selReasons))
+	for jobID, reason := range selReasons {
+		selectedJobs = append(selectedJobs, SelectedJob{JobID: jobID, Reason: reason})
+	}
+	sort.Slice(selectedJobs, func(i, j int) bool { return selectedJobs[i].JobID < selectedJobs[j].JobID })
+
 	d.mu.Lock()
 	d.diffs = diffs
+	d.selectedJobs = selectedJobs
 	d.lastCheckTime = now
 	d.lastCommit = commit
 	if listMeta != nil {

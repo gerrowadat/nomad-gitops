@@ -190,6 +190,158 @@ func (x *JobDiff) GetDetail() string {
 	return ""
 }
 
+type GetSelectedJobsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSelectedJobsRequest) Reset() {
+	*x = GetSelectedJobsRequest{}
+	mi := &file_nomad_botherer_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSelectedJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSelectedJobsRequest) ProtoMessage() {}
+
+func (x *GetSelectedJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nomad_botherer_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSelectedJobsRequest.ProtoReflect.Descriptor instead.
+func (*GetSelectedJobsRequest) Descriptor() ([]byte, []int) {
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{3}
+}
+
+type GetSelectedJobsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Jobs  []*SelectedJob         `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	// RFC3339 timestamp of the last diff check.
+	LastCheckTime string `protobuf:"bytes,2,opt,name=last_check_time,json=lastCheckTime,proto3" json:"last_check_time,omitempty"`
+	// Git commit hash that was current during the last diff check.
+	LastCommit    string `protobuf:"bytes,3,opt,name=last_commit,json=lastCommit,proto3" json:"last_commit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSelectedJobsResponse) Reset() {
+	*x = GetSelectedJobsResponse{}
+	mi := &file_nomad_botherer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSelectedJobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSelectedJobsResponse) ProtoMessage() {}
+
+func (x *GetSelectedJobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nomad_botherer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSelectedJobsResponse.ProtoReflect.Descriptor instead.
+func (*GetSelectedJobsResponse) Descriptor() ([]byte, []int) {
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetSelectedJobsResponse) GetJobs() []*SelectedJob {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
+func (x *GetSelectedJobsResponse) GetLastCheckTime() string {
+	if x != nil {
+		return x.LastCheckTime
+	}
+	return ""
+}
+
+func (x *GetSelectedJobsResponse) GetLastCommit() string {
+	if x != nil {
+		return x.LastCommit
+	}
+	return ""
+}
+
+// SelectedJob records a job that matched the configured selection criteria.
+type SelectedJob struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// One of: glob, meta, both.
+	SelectionReason string `protobuf:"bytes,2,opt,name=selection_reason,json=selectionReason,proto3" json:"selection_reason,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SelectedJob) Reset() {
+	*x = SelectedJob{}
+	mi := &file_nomad_botherer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SelectedJob) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SelectedJob) ProtoMessage() {}
+
+func (x *SelectedJob) ProtoReflect() protoreflect.Message {
+	mi := &file_nomad_botherer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SelectedJob.ProtoReflect.Descriptor instead.
+func (*SelectedJob) Descriptor() ([]byte, []int) {
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SelectedJob) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *SelectedJob) GetSelectionReason() string {
+	if x != nil {
+		return x.SelectionReason
+	}
+	return ""
+}
+
 type GetStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -198,7 +350,7 @@ type GetStatusRequest struct {
 
 func (x *GetStatusRequest) Reset() {
 	*x = GetStatusRequest{}
-	mi := &file_nomad_botherer_proto_msgTypes[3]
+	mi := &file_nomad_botherer_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -210,7 +362,7 @@ func (x *GetStatusRequest) String() string {
 func (*GetStatusRequest) ProtoMessage() {}
 
 func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[3]
+	mi := &file_nomad_botherer_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -223,7 +375,7 @@ func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{3}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{6}
 }
 
 type GetStatusResponse struct {
@@ -237,7 +389,7 @@ type GetStatusResponse struct {
 
 func (x *GetStatusResponse) Reset() {
 	*x = GetStatusResponse{}
-	mi := &file_nomad_botherer_proto_msgTypes[4]
+	mi := &file_nomad_botherer_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -249,7 +401,7 @@ func (x *GetStatusResponse) String() string {
 func (*GetStatusResponse) ProtoMessage() {}
 
 func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[4]
+	mi := &file_nomad_botherer_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -262,7 +414,7 @@ func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetStatusResponse) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{4}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetStatusResponse) GetLastCommit() string {
@@ -287,7 +439,7 @@ type TriggerRefreshRequest struct {
 
 func (x *TriggerRefreshRequest) Reset() {
 	*x = TriggerRefreshRequest{}
-	mi := &file_nomad_botherer_proto_msgTypes[5]
+	mi := &file_nomad_botherer_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -299,7 +451,7 @@ func (x *TriggerRefreshRequest) String() string {
 func (*TriggerRefreshRequest) ProtoMessage() {}
 
 func (x *TriggerRefreshRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[5]
+	mi := &file_nomad_botherer_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -312,7 +464,7 @@ func (x *TriggerRefreshRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerRefreshRequest.ProtoReflect.Descriptor instead.
 func (*TriggerRefreshRequest) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{5}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{8}
 }
 
 type TriggerRefreshResponse struct {
@@ -324,7 +476,7 @@ type TriggerRefreshResponse struct {
 
 func (x *TriggerRefreshResponse) Reset() {
 	*x = TriggerRefreshResponse{}
-	mi := &file_nomad_botherer_proto_msgTypes[6]
+	mi := &file_nomad_botherer_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -336,7 +488,7 @@ func (x *TriggerRefreshResponse) String() string {
 func (*TriggerRefreshResponse) ProtoMessage() {}
 
 func (x *TriggerRefreshResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[6]
+	mi := &file_nomad_botherer_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -349,7 +501,7 @@ func (x *TriggerRefreshResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerRefreshResponse.ProtoReflect.Descriptor instead.
 func (*TriggerRefreshResponse) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{6}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TriggerRefreshResponse) GetMessage() string {
@@ -367,7 +519,7 @@ type GetVersionRequest struct {
 
 func (x *GetVersionRequest) Reset() {
 	*x = GetVersionRequest{}
-	mi := &file_nomad_botherer_proto_msgTypes[7]
+	mi := &file_nomad_botherer_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -379,7 +531,7 @@ func (x *GetVersionRequest) String() string {
 func (*GetVersionRequest) ProtoMessage() {}
 
 func (x *GetVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[7]
+	mi := &file_nomad_botherer_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -392,7 +544,7 @@ func (x *GetVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVersionRequest.ProtoReflect.Descriptor instead.
 func (*GetVersionRequest) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{7}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{10}
 }
 
 type GetVersionResponse struct {
@@ -409,7 +561,7 @@ type GetVersionResponse struct {
 
 func (x *GetVersionResponse) Reset() {
 	*x = GetVersionResponse{}
-	mi := &file_nomad_botherer_proto_msgTypes[8]
+	mi := &file_nomad_botherer_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -421,7 +573,7 @@ func (x *GetVersionResponse) String() string {
 func (*GetVersionResponse) ProtoMessage() {}
 
 func (x *GetVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nomad_botherer_proto_msgTypes[8]
+	mi := &file_nomad_botherer_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -434,7 +586,7 @@ func (x *GetVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVersionResponse.ProtoReflect.Descriptor instead.
 func (*GetVersionResponse) Descriptor() ([]byte, []int) {
-	return file_nomad_botherer_proto_rawDescGZIP(), []int{8}
+	return file_nomad_botherer_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetVersionResponse) GetVersion() string {
@@ -473,7 +625,16 @@ const file_nomad_botherer_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\bhcl_file\x18\x02 \x01(\tR\ahclFile\x12\x1b\n" +
 	"\tdiff_type\x18\x03 \x01(\tR\bdiffType\x12\x16\n" +
-	"\x06detail\x18\x04 \x01(\tR\x06detail\"\x12\n" +
+	"\x06detail\x18\x04 \x01(\tR\x06detail\"\x18\n" +
+	"\x16GetSelectedJobsRequest\"\x96\x01\n" +
+	"\x17GetSelectedJobsResponse\x122\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x1e.nomad_botherer.v1.SelectedJobR\x04jobs\x12&\n" +
+	"\x0flast_check_time\x18\x02 \x01(\tR\rlastCheckTime\x12\x1f\n" +
+	"\vlast_commit\x18\x03 \x01(\tR\n" +
+	"lastCommit\"O\n" +
+	"\vSelectedJob\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12)\n" +
+	"\x10selection_reason\x18\x02 \x01(\tR\x0fselectionReason\"\x12\n" +
 	"\x10GetStatusRequest\"^\n" +
 	"\x11GetStatusResponse\x12\x1f\n" +
 	"\vlast_commit\x18\x01 \x01(\tR\n" +
@@ -487,9 +648,10 @@ const file_nomad_botherer_proto_rawDesc = "" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x1d\n" +
 	"\n" +
-	"build_date\x18\x03 \x01(\tR\tbuildDate2\xfe\x02\n" +
+	"build_date\x18\x03 \x01(\tR\tbuildDate2\xe8\x03\n" +
 	"\rNomadBotherer\x12S\n" +
-	"\bGetDiffs\x12\".nomad_botherer.v1.GetDiffsRequest\x1a#.nomad_botherer.v1.GetDiffsResponse\x12V\n" +
+	"\bGetDiffs\x12\".nomad_botherer.v1.GetDiffsRequest\x1a#.nomad_botherer.v1.GetDiffsResponse\x12h\n" +
+	"\x0fGetSelectedJobs\x12).nomad_botherer.v1.GetSelectedJobsRequest\x1a*.nomad_botherer.v1.GetSelectedJobsResponse\x12V\n" +
 	"\tGetStatus\x12#.nomad_botherer.v1.GetStatusRequest\x1a$.nomad_botherer.v1.GetStatusResponse\x12e\n" +
 	"\x0eTriggerRefresh\x12(.nomad_botherer.v1.TriggerRefreshRequest\x1a).nomad_botherer.v1.TriggerRefreshResponse\x12Y\n" +
 	"\n" +
@@ -507,33 +669,39 @@ func file_nomad_botherer_proto_rawDescGZIP() []byte {
 	return file_nomad_botherer_proto_rawDescData
 }
 
-var file_nomad_botherer_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_nomad_botherer_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_nomad_botherer_proto_goTypes = []any{
-	(*GetDiffsRequest)(nil),        // 0: nomad_botherer.v1.GetDiffsRequest
-	(*GetDiffsResponse)(nil),       // 1: nomad_botherer.v1.GetDiffsResponse
-	(*JobDiff)(nil),                // 2: nomad_botherer.v1.JobDiff
-	(*GetStatusRequest)(nil),       // 3: nomad_botherer.v1.GetStatusRequest
-	(*GetStatusResponse)(nil),      // 4: nomad_botherer.v1.GetStatusResponse
-	(*TriggerRefreshRequest)(nil),  // 5: nomad_botherer.v1.TriggerRefreshRequest
-	(*TriggerRefreshResponse)(nil), // 6: nomad_botherer.v1.TriggerRefreshResponse
-	(*GetVersionRequest)(nil),      // 7: nomad_botherer.v1.GetVersionRequest
-	(*GetVersionResponse)(nil),     // 8: nomad_botherer.v1.GetVersionResponse
+	(*GetDiffsRequest)(nil),         // 0: nomad_botherer.v1.GetDiffsRequest
+	(*GetDiffsResponse)(nil),        // 1: nomad_botherer.v1.GetDiffsResponse
+	(*JobDiff)(nil),                 // 2: nomad_botherer.v1.JobDiff
+	(*GetSelectedJobsRequest)(nil),  // 3: nomad_botherer.v1.GetSelectedJobsRequest
+	(*GetSelectedJobsResponse)(nil), // 4: nomad_botherer.v1.GetSelectedJobsResponse
+	(*SelectedJob)(nil),             // 5: nomad_botherer.v1.SelectedJob
+	(*GetStatusRequest)(nil),        // 6: nomad_botherer.v1.GetStatusRequest
+	(*GetStatusResponse)(nil),       // 7: nomad_botherer.v1.GetStatusResponse
+	(*TriggerRefreshRequest)(nil),   // 8: nomad_botherer.v1.TriggerRefreshRequest
+	(*TriggerRefreshResponse)(nil),  // 9: nomad_botherer.v1.TriggerRefreshResponse
+	(*GetVersionRequest)(nil),       // 10: nomad_botherer.v1.GetVersionRequest
+	(*GetVersionResponse)(nil),      // 11: nomad_botherer.v1.GetVersionResponse
 }
 var file_nomad_botherer_proto_depIdxs = []int32{
-	2, // 0: nomad_botherer.v1.GetDiffsResponse.diffs:type_name -> nomad_botherer.v1.JobDiff
-	0, // 1: nomad_botherer.v1.NomadBotherer.GetDiffs:input_type -> nomad_botherer.v1.GetDiffsRequest
-	3, // 2: nomad_botherer.v1.NomadBotherer.GetStatus:input_type -> nomad_botherer.v1.GetStatusRequest
-	5, // 3: nomad_botherer.v1.NomadBotherer.TriggerRefresh:input_type -> nomad_botherer.v1.TriggerRefreshRequest
-	7, // 4: nomad_botherer.v1.NomadBotherer.GetVersion:input_type -> nomad_botherer.v1.GetVersionRequest
-	1, // 5: nomad_botherer.v1.NomadBotherer.GetDiffs:output_type -> nomad_botherer.v1.GetDiffsResponse
-	4, // 6: nomad_botherer.v1.NomadBotherer.GetStatus:output_type -> nomad_botherer.v1.GetStatusResponse
-	6, // 7: nomad_botherer.v1.NomadBotherer.TriggerRefresh:output_type -> nomad_botherer.v1.TriggerRefreshResponse
-	8, // 8: nomad_botherer.v1.NomadBotherer.GetVersion:output_type -> nomad_botherer.v1.GetVersionResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2,  // 0: nomad_botherer.v1.GetDiffsResponse.diffs:type_name -> nomad_botherer.v1.JobDiff
+	5,  // 1: nomad_botherer.v1.GetSelectedJobsResponse.jobs:type_name -> nomad_botherer.v1.SelectedJob
+	0,  // 2: nomad_botherer.v1.NomadBotherer.GetDiffs:input_type -> nomad_botherer.v1.GetDiffsRequest
+	3,  // 3: nomad_botherer.v1.NomadBotherer.GetSelectedJobs:input_type -> nomad_botherer.v1.GetSelectedJobsRequest
+	6,  // 4: nomad_botherer.v1.NomadBotherer.GetStatus:input_type -> nomad_botherer.v1.GetStatusRequest
+	8,  // 5: nomad_botherer.v1.NomadBotherer.TriggerRefresh:input_type -> nomad_botherer.v1.TriggerRefreshRequest
+	10, // 6: nomad_botherer.v1.NomadBotherer.GetVersion:input_type -> nomad_botherer.v1.GetVersionRequest
+	1,  // 7: nomad_botherer.v1.NomadBotherer.GetDiffs:output_type -> nomad_botherer.v1.GetDiffsResponse
+	4,  // 8: nomad_botherer.v1.NomadBotherer.GetSelectedJobs:output_type -> nomad_botherer.v1.GetSelectedJobsResponse
+	7,  // 9: nomad_botherer.v1.NomadBotherer.GetStatus:output_type -> nomad_botherer.v1.GetStatusResponse
+	9,  // 10: nomad_botherer.v1.NomadBotherer.TriggerRefresh:output_type -> nomad_botherer.v1.TriggerRefreshResponse
+	11, // 11: nomad_botherer.v1.NomadBotherer.GetVersion:output_type -> nomad_botherer.v1.GetVersionResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_nomad_botherer_proto_init() }
@@ -547,7 +715,7 @@ func file_nomad_botherer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nomad_botherer_proto_rawDesc), len(file_nomad_botherer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

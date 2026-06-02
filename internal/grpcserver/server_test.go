@@ -22,13 +22,18 @@ const testAPIKey = "test-key-abc123"
 
 // mockDiffSource implements grpcserver.DiffSource.
 type mockDiffSource struct {
-	diffs      []nomad.JobDiff
-	lastCheck  time.Time
-	lastCommit string
+	diffs         []nomad.JobDiff
+	selectedJobs  []nomad.SelectedJob
+	lastCheck     time.Time
+	lastCommit    string
 }
 
 func (m *mockDiffSource) Diffs() ([]nomad.JobDiff, time.Time, string) {
 	return m.diffs, m.lastCheck, m.lastCommit
+}
+
+func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string) {
+	return m.selectedJobs, m.lastCheck, m.lastCommit
 }
 
 func (m *mockDiffSource) Ready() bool { return !m.lastCheck.IsZero() }
@@ -484,5 +489,77 @@ func TestMetrics_SuccessfulRequestCounted(t *testing.T) {
 	}
 	if total != 1 {
 		t.Fatalf("want 1 request total, got %v", total)
+	}
+}
+
+func TestGetSelectedJobs_Empty(t *testing.T) {
+	diffSrc := &mockDiffSource{
+		lastCheck:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		lastCommit: "abc123",
+	}
+	gitSrc := &mockGitSource{lastCommit: "abc123", lastUpdate: time.Now()}
+	client, stop := startTestServer(t, diffSrc, gitSrc)
+	defer stop()
+
+	resp, err := client.GetSelectedJobs(authCtx(testAPIKey), &grpcapi.GetSelectedJobsRequest{})
+	if err != nil {
+		t.Fatalf("GetSelectedJobs: %v", err)
+	}
+	if len(resp.Jobs) != 0 {
+		t.Errorf("want 0 jobs, got %d", len(resp.Jobs))
+	}
+	if resp.LastCheckTime == "" {
+		t.Errorf("want non-empty last_check_time")
+	}
+	if resp.LastCommit != "abc123" {
+		t.Errorf("want last_commit abc123, got %q", resp.LastCommit)
+	}
+}
+
+func TestGetSelectedJobs_WithJobs(t *testing.T) {
+	diffSrc := &mockDiffSource{
+		lastCheck:  time.Now(),
+		lastCommit: "def456",
+		selectedJobs: []nomad.SelectedJob{
+			{JobID: "api", Reason: nomad.SelectionReasonMeta},
+			{JobID: "worker", Reason: nomad.SelectionReasonGlob},
+			{JobID: "both-job", Reason: nomad.SelectionReasonBoth},
+		},
+	}
+	gitSrc := &mockGitSource{lastCommit: "def456", lastUpdate: time.Now()}
+	client, stop := startTestServer(t, diffSrc, gitSrc)
+	defer stop()
+
+	resp, err := client.GetSelectedJobs(authCtx(testAPIKey), &grpcapi.GetSelectedJobsRequest{})
+	if err != nil {
+		t.Fatalf("GetSelectedJobs: %v", err)
+	}
+	if len(resp.Jobs) != 3 {
+		t.Fatalf("want 3 jobs, got %d: %+v", len(resp.Jobs), resp.Jobs)
+	}
+	byID := make(map[string]string)
+	for _, j := range resp.Jobs {
+		byID[j.JobId] = j.SelectionReason
+	}
+	if byID["api"] != "meta" {
+		t.Errorf("api: want reason meta, got %q", byID["api"])
+	}
+	if byID["worker"] != "glob" {
+		t.Errorf("worker: want reason glob, got %q", byID["worker"])
+	}
+	if byID["both-job"] != "both" {
+		t.Errorf("both-job: want reason both, got %q", byID["both-job"])
+	}
+}
+
+func TestGetSelectedJobs_NotReady(t *testing.T) {
+	diffSrc := &mockDiffSource{} // zero lastCheck → not ready
+	gitSrc := &mockGitSource{lastCommit: "abc", lastUpdate: time.Now()}
+	client, stop := startTestServer(t, diffSrc, gitSrc)
+	defer stop()
+
+	_, err := client.GetSelectedJobs(authCtx(testAPIKey), &grpcapi.GetSelectedJobsRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("want Unavailable, got %v", err)
 	}
 }

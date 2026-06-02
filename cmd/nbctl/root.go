@@ -51,6 +51,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newDiffsCmd(cfg),
+		newSelectedJobsCmd(cfg),
 		newStatusCmd(cfg),
 		newRefreshCmd(cfg),
 		newVersionCmd(cfg),

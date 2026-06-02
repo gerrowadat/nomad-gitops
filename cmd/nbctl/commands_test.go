@@ -18,13 +18,18 @@ const testKey = "test-secret"
 
 // mockDiffSource implements grpcserver.DiffSource for tests.
 type mockDiffSource struct {
-	diffs      []nomad.JobDiff
-	lastCheck  time.Time
-	lastCommit string
+	diffs        []nomad.JobDiff
+	selectedJobs []nomad.SelectedJob
+	lastCheck    time.Time
+	lastCommit   string
 }
 
 func (m *mockDiffSource) Diffs() ([]nomad.JobDiff, time.Time, string) {
 	return m.diffs, m.lastCheck, m.lastCommit
+}
+
+func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string) {
+	return m.selectedJobs, m.lastCheck, m.lastCommit
 }
 
 func (m *mockDiffSource) Ready() bool { return !m.lastCheck.IsZero() }
@@ -146,6 +151,48 @@ func TestDiffsCmd_JSON(t *testing.T) {
 }
 
 // ── status ───────────────────────────────────────────────────────────────────
+
+func TestSelectedJobsCmd_NoJobs(t *testing.T) {
+	now := time.Now()
+	addr, stop := startServer(t, &mockDiffSource{lastCheck: now}, &mockGitSource{lastUpdate: now}, defaultInfo)
+	defer stop()
+
+	out, err := runCmd(t, addr, testKey, "selected-jobs")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "no jobs currently selected") {
+		t.Errorf("want 'no jobs currently selected', got: %q", out)
+	}
+}
+
+func TestSelectedJobsCmd_WithJobs(t *testing.T) {
+	src := &mockDiffSource{
+		selectedJobs: []nomad.SelectedJob{
+			{JobID: "api", Reason: nomad.SelectionReasonMeta},
+			{JobID: "worker", Reason: nomad.SelectionReasonGlob},
+		},
+		lastCheck:  time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		lastCommit: "abc123",
+	}
+	git := &mockGitSource{lastUpdate: time.Now()}
+	addr, stop := startServer(t, src, git, defaultInfo)
+	defer stop()
+
+	out, err := runCmd(t, addr, testKey, "selected-jobs")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "2 job(s) selected") {
+		t.Errorf("want job count, got: %q", out)
+	}
+	if !strings.Contains(out, "api") || !strings.Contains(out, "meta") {
+		t.Errorf("want api/meta line, got: %q", out)
+	}
+	if !strings.Contains(out, "worker") || !strings.Contains(out, "glob") {
+		t.Errorf("want worker/glob line, got: %q", out)
+	}
+}
 
 func TestStatusCmd(t *testing.T) {
 	git := &mockGitSource{

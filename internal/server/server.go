@@ -25,6 +25,7 @@ import (
 // DiffSource is satisfied by *nomad.Differ.
 type DiffSource interface {
 	Diffs() ([]nomad.JobDiff, time.Time, string)
+	SelectedJobs() ([]nomad.SelectedJob, time.Time, string)
 	// Ready reports whether at least one diff check has completed.
 	Ready() bool
 }
@@ -188,6 +189,23 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
     {{- if .LastWebhookFail}} &nbsp; failed <code>{{.LastWebhookFail}}</code>{{end}}
   </p>
   {{- end}}
+  {{- if .SelectedJobs}}
+  <h2>Selected jobs ({{len .SelectedJobs}})</h2>
+  <table style="border-collapse:collapse;width:100%">
+    <thead><tr style="text-align:left;border-bottom:1px solid #ccc">
+      <th style="padding:0.3em 1em 0.3em 0">Job</th>
+      <th style="padding:0.3em 0">Selected by</th>
+    </tr></thead>
+    <tbody>
+    {{- range .SelectedJobs}}
+    <tr>
+      <td style="padding:0.25em 1em 0.25em 0"><code>{{.JobID}}</code></td>
+      <td style="padding:0.25em 0">{{.Reason}}</td>
+    </tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- end}}
   <ul>
     <li><a href="/diffs">/diffs</a> — current job diffs (plan-style)</li>
     <li><a href="/healthz">/healthz</a> — JSON health check</li>
@@ -201,10 +219,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	starting := !s.git.Ready() || !s.diffs.Ready()
 
 	var diffs []nomad.JobDiff
+	var selectedJobs []nomad.SelectedJob
 	var lastCheck time.Time
 	var commit string
 	if !starting {
 		diffs, lastCheck, commit = s.diffs.Diffs()
+		selectedJobs, _, _ = s.diffs.SelectedJobs()
 	}
 
 	s.webhookMu.RLock()
@@ -221,6 +241,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Version         string
 		Starting        bool
 		DiffCount       int
+		SelectedJobs    []nomad.SelectedJob
 		LastCheck       string
 		Commit          string
 		LastWebhookOK   string
@@ -231,6 +252,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Version:        s.version,
 		Starting:       starting,
 		DiffCount:      len(diffs),
+		SelectedJobs:   selectedJobs,
 		Commit:         commit,
 		SelectionGlob:  s.cfg.JobSelectorGlob,
 		ManagedMetaKey: managedMetaKey,
