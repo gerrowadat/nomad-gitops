@@ -82,7 +82,7 @@ func newTestServerWithRegistry(t *testing.T, diffs []nomad.JobDiff, webhookSecre
 		lastUpdate: time.Now(),
 	}
 	reg := prometheus.NewRegistry()
-	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", reg)
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, reg)
 	return srv, gitSrc, reg
 }
 
@@ -596,7 +596,7 @@ func newNotReadyServer(t *testing.T) *server.Server {
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
 	diffSrc := &mockDiffSource{} // zero lastCheck → not ready
 	gitSrc := &mockGitSource{}   // zero lastUpdate → not ready
-	return server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+	return server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 }
 
 func TestHealthz_NotReady_Returns503(t *testing.T) {
@@ -624,7 +624,7 @@ func TestHealthz_GitNotReady_Returns503(t *testing.T) {
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
 	diffSrc := &mockDiffSource{lastCheck: time.Now(), lastCommit: "abc"} // diffs ready
 	gitSrc := &mockGitSource{}                                            // git not ready
-	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -637,7 +637,7 @@ func TestHealthz_DiffsNotReady_Returns503(t *testing.T) {
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
 	diffSrc := &mockDiffSource{}                                                // diffs not ready
 	gitSrc := &mockGitSource{lastCommit: "abc", lastUpdate: time.Now()} // git ready
-	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -725,7 +725,7 @@ func newTestServerWithSelectedJobs(t *testing.T, jobs []nomad.SelectedJob) *serv
 		lastCommit:   "deadbeef",
 	}
 	gitSrc := &mockGitSource{lastCommit: "deadbeef", lastUpdate: time.Now()}
-	return server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+	return server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 }
 
 func TestIndex_SelectedJobs_Shown(t *testing.T) {
@@ -764,5 +764,214 @@ func TestIndex_NoSelectedJobs_SectionAbsent(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "Selected jobs") {
 		t.Error("index page should not show selected-jobs section when there are no selected jobs")
+	}
+}
+
+// ── /api/ ─────────────────────────────────────────────────────────────────────
+
+func newTestServerWithAPI(t *testing.T, apiKey string) *server.Server {
+	t.Helper()
+	cfg := &config.Config{
+		ListenAddr:  ":0",
+		WebhookPath: "/webhook",
+		Branch:      "main",
+		APIKey:      apiKey,
+	}
+	diffSrc := &mockDiffSource{
+		diffs: []nomad.JobDiff{
+			{JobID: "api-job", DiffType: nomad.DiffTypeModified, Detail: "changed"},
+		},
+		selectedJobs: []nomad.SelectedJob{
+			{JobID: "api-job", Reason: nomad.SelectionReasonMeta},
+		},
+		lastCheck:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		lastCommit: "abc123",
+	}
+	gitSrc := &mockGitSource{lastCommit: "abc123", lastUpdate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	return server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "v1.0.0", Commit: "abc", BuildDate: "2026-01-01"}, prometheus.NewRegistry())
+}
+
+func apiReq(t *testing.T, method, path, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	rec := httptest.NewRecorder()
+	return rec
+}
+
+func TestAPI_Disabled_Returns404(t *testing.T) {
+	// No APIKey → routes not registered → 404
+	srv, _ := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("want 404 when API disabled, got %d", rec.Code)
+	}
+}
+
+func TestAPI_NoKey_Returns401(t *testing.T) {
+	srv := newTestServerWithAPI(t, "secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 without key, got %d", rec.Code)
+	}
+}
+
+func TestAPI_WrongKey_Returns401(t *testing.T) {
+	srv := newTestServerWithAPI(t, "correct")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 with wrong key, got %d", rec.Code)
+	}
+}
+
+func TestAPI_Diffs(t *testing.T) {
+	const key = "testkey"
+	srv := newTestServerWithAPI(t, key)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("want application/json, got %q", ct)
+	}
+	var resp struct {
+		Diffs []struct {
+			JobID string `json:"job_id"`
+		} `json:"diffs"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Diffs) != 1 || resp.Diffs[0].JobID != "api-job" {
+		t.Errorf("unexpected diffs: %+v", resp.Diffs)
+	}
+}
+
+func TestAPI_SelectedJobs(t *testing.T) {
+	const key = "testkey"
+	srv := newTestServerWithAPI(t, key)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/selected-jobs", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	var resp struct {
+		Jobs []struct {
+			JobID  string `json:"job_id"`
+			Reason string `json:"selection_reason"`
+		} `json:"jobs"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != "api-job" || resp.Jobs[0].Reason != "meta" {
+		t.Errorf("unexpected jobs: %+v", resp.Jobs)
+	}
+}
+
+func TestAPI_Status(t *testing.T) {
+	const key = "testkey"
+	srv := newTestServerWithAPI(t, key)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	var resp struct {
+		LastCommit string `json:"last_commit"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.LastCommit != "abc123" {
+		t.Errorf("want commit abc123, got %q", resp.LastCommit)
+	}
+}
+
+func TestAPI_Version(t *testing.T) {
+	const key = "testkey"
+	srv := newTestServerWithAPI(t, key)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	var resp struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Version != "v1.0.0" || resp.Commit != "abc" {
+		t.Errorf("unexpected version response: %+v", resp)
+	}
+}
+
+func TestAPI_Refresh(t *testing.T) {
+	const key = "testkey"
+	srv := newTestServerWithAPI(t, key)
+	_, gitSrc := newTestServer(t, nil) // unused, just checking trigger
+	_ = gitSrc
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200 on refresh, got %d", rec.Code)
+	}
+}
+
+func TestAPI_Spec_Public(t *testing.T) {
+	srv := newTestServerWithAPI(t, "secret")
+	// No Authorization header — spec should be public
+	req := httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 for spec, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"openapi"`) {
+		t.Error("spec response should contain openapi key")
+	}
+}
+
+func TestAPI_NotReady_Returns503(t *testing.T) {
+	const key = "testkey"
+	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main", APIKey: key}
+	// Not-ready diff source (zero lastCheck)
+	diffSrc := &mockDiffSource{}
+	gitSrc := &mockGitSource{lastCommit: "x", lastUpdate: time.Now()}
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503 when not ready, got %d", rec.Code)
 	}
 }

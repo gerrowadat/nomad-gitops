@@ -12,7 +12,6 @@ import (
 
 	"github.com/gerrowadat/nomad-botherer/internal/config"
 	"github.com/gerrowadat/nomad-botherer/internal/gitwatch"
-	"github.com/gerrowadat/nomad-botherer/internal/grpcserver"
 	"github.com/gerrowadat/nomad-botherer/internal/nomad"
 	"github.com/gerrowadat/nomad-botherer/internal/server"
 )
@@ -155,31 +154,11 @@ func main() {
 	// Watcher polls git and triggers onChange on new commits.
 	go watcher.Run(ctx)
 
-	// Start gRPC server if configured.
-	if cfg.GRPCListenAddr != "" {
-		if cfg.GRPCAPIKey == "" {
-			slog.Error("grpc-listen-addr is set but grpc-api-key is empty; refusing to start an unauthenticated gRPC server")
-			os.Exit(1)
-		}
-		grpcSrv := grpcserver.New(cfg.GRPCAPIKey, differ, watcher, grpcserver.BuildInfo{
-			Version:   version,
-			Commit:    commit,
-			BuildDate: buildDate,
-		})
-		// Listen before the goroutine so a bind failure is fatal, not just logged.
-		grpcLis, err := grpcSrv.Listen(cfg.GRPCListenAddr)
-		if err != nil {
-			slog.Error("gRPC server failed to bind", "addr", cfg.GRPCListenAddr, "err", err)
-			os.Exit(1)
-		}
-		go func() {
-			if err := grpcSrv.Serve(ctx, grpcLis); err != nil {
-				slog.Error("gRPC server error", "err", err)
-			}
-		}()
-	}
-
-	srv := server.New(cfg, differ, watcher, version)
+	srv := server.New(cfg, differ, watcher, server.BuildInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildDate: buildDate,
+	})
 	if err := srv.Run(ctx); err != nil {
 		slog.Error("HTTP server error", "err", err)
 		os.Exit(1)
