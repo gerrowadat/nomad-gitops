@@ -55,7 +55,7 @@ nomad-botherer writes one Variable per in-flight rollout at a well-known path:
 nomad/jobs/gitops/checkpoints/<git_commit>
 ```
 
-The value is a serialised (JSON or protobuf binary) snapshot of the `JobUpdate`
+The value is a JSON-serialised snapshot of the `JobUpdate`
 slice for that commit. The Variable is created when the first update for a
 commit is enqueued and updated atomically as each update transitions through
 `PENDING → IN_PROGRESS → SUCCEEDED/FAILED`. When all updates for a commit reach

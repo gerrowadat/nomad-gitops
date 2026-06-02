@@ -959,19 +959,63 @@ func TestAPI_Spec_Public(t *testing.T) {
 	}
 }
 
-func TestAPI_NotReady_Returns503(t *testing.T) {
+func notReadySrv(t *testing.T) *server.Server {
+	t.Helper()
 	const key = "testkey"
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main", APIKey: key}
-	// Not-ready diff source (zero lastCheck)
-	diffSrc := &mockDiffSource{}
+	diffSrc := &mockDiffSource{} // zero lastCheck → not ready
 	gitSrc := &mockGitSource{lastCommit: "x", lastUpdate: time.Now()}
-	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+	return server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+}
 
+func TestAPI_NotReady_Diffs_Returns503(t *testing.T) {
+	srv := notReadySrv(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer testkey")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("want 503 when not ready, got %d", rec.Code)
+	}
+}
+
+func TestAPI_NotReady_SelectedJobs_Returns503(t *testing.T) {
+	srv := notReadySrv(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/selected-jobs", nil)
+	req.Header.Set("Authorization", "Bearer testkey")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503 for selected-jobs when not ready, got %d", rec.Code)
+	}
+}
+
+func TestAPI_NotReady_Status_Returns503(t *testing.T) {
+	const key = "testkey"
+	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main", APIKey: key}
+	diffSrc := &mockDiffSource{lastCheck: time.Now()} // diffs ready
+	gitSrc := &mockGitSource{}                         // git NOT ready (zero lastUpdate)
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503 for status when git not ready, got %d", rec.Code)
+	}
+}
+
+func TestFmtTime_ZeroReturnsEmpty(t *testing.T) {
+	if got := server.FmtTime(time.Time{}); got != "" {
+		t.Errorf("zero time: want empty string, got %q", got)
+	}
+}
+
+func TestFmtTime_NonZeroReturnsRFC3339(t *testing.T) {
+	ts := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	got := server.FmtTime(ts)
+	if got != "2026-01-15T12:00:00Z" {
+		t.Errorf("want RFC3339 UTC, got %q", got)
 	}
 }

@@ -1259,3 +1259,137 @@ func TestDiffer_HCLCanonical_MetaInHCLNotNomad(t *testing.T) {
 		t.Errorf("want 1 selected job (hcl-canonical), got %+v", jobs)
 	}
 }
+
+// ── mergeSelectionReason ──────────────────────────────────────────────────────
+
+func TestMergeSelectionReason_EmptyExisting(t *testing.T) {
+	got := nomad.MergeSelectionReason("", nomad.SelectionReasonGlob)
+	if got != nomad.SelectionReasonGlob {
+		t.Errorf("want glob, got %v", got)
+	}
+}
+
+func TestMergeSelectionReason_SameReason(t *testing.T) {
+	got := nomad.MergeSelectionReason(nomad.SelectionReasonMeta, nomad.SelectionReasonMeta)
+	if got != nomad.SelectionReasonMeta {
+		t.Errorf("want meta, got %v", got)
+	}
+}
+
+func TestMergeSelectionReason_DifferentReasons(t *testing.T) {
+	got := nomad.MergeSelectionReason(nomad.SelectionReasonGlob, nomad.SelectionReasonMeta)
+	if got != nomad.SelectionReasonBoth {
+		t.Errorf("want both, got %v", got)
+	}
+}
+
+// ── hasContentDiff ────────────────────────────────────────────────────────────
+
+func TestHasContentDiff_Nil(t *testing.T) {
+	if nomad.HasContentDiff(nil) {
+		t.Error("nil diff should not be a content diff")
+	}
+}
+
+func TestHasContentDiff_TypeNone(t *testing.T) {
+	d := &nomadapi.JobDiff{Type: "None"}
+	if nomad.HasContentDiff(d) {
+		t.Error("Type=None should not be a content diff")
+	}
+}
+
+func TestHasContentDiff_TopLevelField(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type:   "Edited",
+		Fields: []*nomadapi.FieldDiff{{Name: "Priority", Type: "Edited"}},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("top-level field diff should be a content diff")
+	}
+}
+
+func TestHasContentDiff_TopLevelObject(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type:    "Edited",
+		Objects: []*nomadapi.ObjectDiff{{Type: "Edited"}},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("top-level object diff should be a content diff")
+	}
+}
+
+func TestHasContentDiff_TaskGroupAdded(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{Type: "Added"},
+		},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("Added task group should be a content diff")
+	}
+}
+
+func TestHasContentDiff_TaskGroupFieldOnly(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{
+				Type:   "Edited",
+				Fields: []*nomadapi.FieldDiff{{Name: "Count", Type: "Edited"}},
+			},
+		},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("task group field diff should be a content diff")
+	}
+}
+
+func TestHasContentDiff_TaskGroupObjectOnly(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{
+				Type:    "Edited",
+				Objects: []*nomadapi.ObjectDiff{{Type: "Edited"}},
+			},
+		},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("task group object diff should be a content diff")
+	}
+}
+
+func TestHasContentDiff_TaskEdited(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{
+				Type: "Edited",
+				Tasks: []*nomadapi.TaskDiff{
+					{Type: "Edited", Fields: []*nomadapi.FieldDiff{{Name: "Driver"}}},
+				},
+			},
+		},
+	}
+	if !nomad.HasContentDiff(d) {
+		t.Error("edited task should be a content diff")
+	}
+}
+
+func TestHasContentDiff_AllTaskGroupsNone(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{
+				Type: "None",
+				Tasks: []*nomadapi.TaskDiff{
+					{Type: "None"},
+				},
+			},
+		},
+	}
+	if nomad.HasContentDiff(d) {
+		t.Error("all-None task groups should not be a content diff")
+	}
+}

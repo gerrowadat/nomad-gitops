@@ -12,7 +12,7 @@ reconciles Nomad job state toward what is declared in Git.
 
 The core questions are:
 
-1. How should a job update be represented internally (and in the gRPC API)?
+1. How should a job update be represented internally (and exposed via the JSON API)?
 2. How should we use Nomad cluster state — particularly the Raft index and job
    version fields — to make updates safe and idempotent?
 3. Which of three possible architectures should we adopt?
@@ -35,90 +35,64 @@ is an intended transition.
 
 ---
 
-## Protobuf representation
+## Go struct representation
 
-The existing `JobDiff` message in `proto/nomad_botherer.proto` captures the
-observation side. A new `JobUpdate` message captures the action side. Below is
-the proposed addition to the proto file.
+The existing `JobDiff` struct in `internal/nomad/differ.go` captures the
+observation side. A new `JobUpdate` struct captures the action side:
 
-```protobuf
+```go
 // JobUpdate represents a single intended change to a Nomad job, derived from
 // a detected diff between Git and the cluster. One diff produces one update.
-message JobUpdate {
-  // Unique identifier for this update, assigned by nomad-botherer.
-  // Format: <job_id>/<git_commit_short> — stable across restarts.
-  string update_id = 1;
+type JobUpdate struct {
+    // Unique identifier for this update, assigned by nomad-botherer.
+    // Format: <job_id>/<git_commit_short> — stable across restarts.
+    UpdateID string `json:"update_id"`
 
-  string job_id = 2;
+    JobID string `json:"job_id"`
 
-  // Path to the HCL file that is the source of truth for this job.
-  // Empty when operation is DEREGISTER (no HCL file for the job).
-  string hcl_file = 3;
+    // Path to the HCL file that is the source of truth for this job.
+    // Empty when operation is DEREGISTER (no HCL file for the job).
+    HCLFile string `json:"hcl_file,omitempty"`
 
-  // Git commit hash that triggered this update.
-  string git_commit = 4;
+    // Git commit hash that triggered this update.
+    GitCommit string `json:"git_commit"`
 
-  // Operation to perform on the Nomad cluster.
-  JobUpdateOperation operation = 5;
+    Operation JobUpdateOperation `json:"operation"`
+    Status    JobUpdateStatus    `json:"status"`
 
-  // Current status of this update.
-  JobUpdateStatus status = 6;
+    // Nomad's JobModifyIndex at the time the drift was detected.
+    // Used as a CAS (check-and-set) token when calling Jobs.Register().
+    // Zero means the job did not exist in Nomad at detection time.
+    NomadJobModifyIndex uint64 `json:"nomad_job_modify_index"`
 
-  // Nomad's JobModifyIndex at the time the drift was detected.
-  // Used as a CAS (check-and-set) token when calling Jobs.Register().
-  // Zero means the job did not exist in Nomad at detection time.
-  uint64 nomad_job_modify_index = 7;
+    // Nomad's cluster Raft index at detection time; recorded for auditability.
+    NomadRaftIndex uint64 `json:"nomad_raft_index"`
 
-  // Nomad's cluster Raft index (QueryMeta.LastIndex from Jobs.List())
-  // at the time the diff check ran. Recorded for auditability.
-  uint64 nomad_raft_index = 8;
-
-  // RFC3339 timestamp when the diff was detected and this update was created.
-  string detected_at = 9;
-
-  // RFC3339 timestamp when the update was applied (or failed). Empty until then.
-  string applied_at = 10;
-
-  // Human-readable error message if status is FAILED. Empty otherwise.
-  string error = 11;
+    DetectedAt string `json:"detected_at"`           // RFC3339
+    AppliedAt  string `json:"applied_at,omitempty"`  // RFC3339; empty until applied
+    Error      string `json:"error,omitempty"`
 }
 
-enum JobUpdateOperation {
-  JOB_UPDATE_OPERATION_UNSPECIFIED = 0;
-  REGISTER   = 1;  // Jobs.Register() — covers both first-time and modify
-  DEREGISTER = 2;  // Jobs.Deregister()
-}
+type JobUpdateOperation string
 
-enum JobUpdateStatus {
-  JOB_UPDATE_STATUS_UNSPECIFIED = 0;
-  PENDING     = 1;  // Created, not yet attempted
-  IN_PROGRESS = 2;  // Apply call in flight
-  SUCCEEDED   = 3;  // Nomad accepted the change
-  FAILED      = 4;  // Nomad rejected or returned an error
-  SUPERSEDED  = 5;  // A newer update for the same job was created before this one applied
-}
+const (
+    JobUpdateOperationRegister   JobUpdateOperation = "REGISTER"
+    JobUpdateOperationDeregister JobUpdateOperation = "DEREGISTER"
+)
+
+type JobUpdateStatus string
+
+const (
+    JobUpdateStatusPending    JobUpdateStatus = "PENDING"
+    JobUpdateStatusInProgress JobUpdateStatus = "IN_PROGRESS"
+    JobUpdateStatusSucceeded  JobUpdateStatus = "SUCCEEDED"
+    JobUpdateStatusFailed     JobUpdateStatus = "FAILED"
+    JobUpdateStatusSuperseded JobUpdateStatus = "SUPERSEDED"
+)
 ```
 
-A new gRPC method gives operators visibility into the update queue:
-
-```protobuf
-service NomadBotherer {
-  // ... existing methods ...
-
-  // ListUpdates returns the current set of pending and recently completed
-  // job updates.
-  rpc ListUpdates(ListUpdatesRequest) returns (ListUpdatesResponse);
-}
-
-message ListUpdatesRequest {
-  // If true, include SUCCEEDED and FAILED updates, not just PENDING/IN_PROGRESS.
-  bool include_completed = 1;
-}
-
-message ListUpdatesResponse {
-  repeated JobUpdate updates = 1;
-}
-```
+A `GET /api/v1/updates` endpoint gives operators visibility into the update queue,
+returning the same JSON-serialised `[]JobUpdate` slice.
 
 ---
 
@@ -239,8 +213,7 @@ check is triggered.
 
 - Diff checks and applies are decoupled. A slow or failing apply does not affect
   detection latency.
-- Per-update status is first-class: `ListUpdates` gRPC method has meaningful
-  data.
+- Per-update status is first-class: `GET /api/v1/updates` has meaningful data.
 - Natural place to add apply rate limiting (one update per N seconds per job)
   or dry-run mode (process queue but skip the actual `Jobs.Register()` call).
 - The `SUPERSEDED` status handles pushes that arrive faster than applies finish.
@@ -318,9 +291,9 @@ value, is the most compatible with the existing Differ/Watcher architecture,
 and provides the hooks needed to add Alternative C's approval layer later without
 restructuring the core.
 
-The protobuf additions above should land in the same change as the queue
-implementation. The `ListUpdates` gRPC method makes the queue observable without
-requiring log scraping.
+The `JobUpdate` struct additions above should land in the same change as the queue
+implementation. The `GET /api/v1/updates` endpoint makes the queue observable
+without requiring log scraping.
 
 ---
 

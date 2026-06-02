@@ -6,8 +6,8 @@
 #
 #   nomad job run nomad-botherer.hcl
 #
-# The only required settings are GIT_REPO_URL and (when gRPC is enabled)
-# GRPC_API_KEY. Everything else has a sensible default.
+# The only required setting is GIT_REPO_URL. Everything else has a sensible
+# default. Set API_KEY to enable the authenticated JSON API (/api/v1/).
 
 job "nomad-botherer" {
   # Run in the same namespace as the jobs you want to watch. nomad-botherer
@@ -40,12 +40,8 @@ job "nomad-botherer" {
     }
 
     network {
-      # HTTP port: /healthz, /metrics, /diffs, /webhook, and the status page.
+      # HTTP port: /healthz, /metrics, /diffs, /webhook, /api/v1/, and the status page.
       port "http" { to = 8080 }
-
-      # gRPC port: used by nbctl and grpcurl. Remove this port and set
-      # GRPC_LISTEN_ADDR = "" below if you do not need the gRPC API.
-      port "grpc" { to = 9090 }
     }
 
     task "nomad-botherer" {
@@ -53,7 +49,7 @@ job "nomad-botherer" {
 
       config {
         image = "ghcr.io/gerrowadat/nomad-botherer:latest"
-        ports = ["http", "grpc"]
+        ports = ["http"]
       }
 
       env {
@@ -125,18 +121,14 @@ job "nomad-botherer" {
         # URL path for the webhook endpoint. Defaults to /webhook.
         # WEBHOOK_PATH = "/webhook"
 
-        # ── gRPC server ─────────────────────────────────────────────────────
+        # ── JSON API ────────────────────────────────────────────────────────
         #
-        # The gRPC server is used by nbctl and grpcurl. To disable it, set
-        # GRPC_LISTEN_ADDR to an empty string and remove the "grpc" port above.
-
-        GRPC_LISTEN_ADDR = ":9090"
-
-        # Pre-shared API key for gRPC authentication. Required when
-        # GRPC_LISTEN_ADDR is non-empty. Clients pass this as:
-        #   -H 'authorization: Bearer <key>'
-        # Choose a long random value and store it in a Nomad Variable.
-        GRPC_API_KEY = "change-me"
+        # The /api/v1/ endpoints are disabled by default. Set API_KEY to a
+        # long random string to enable them. All /api/v1/ requests must include:
+        #   Authorization: Bearer <key>
+        # The OpenAPI spec is served publicly at /api/openapi.json.
+        # Store the key in a Nomad Variable rather than hardcoding it here.
+        # API_KEY = "change-me"
 
         # ── Job selection ───────────────────────────────────────────────────
         #
@@ -190,19 +182,19 @@ job "nomad-botherer" {
 
       # ── Reading secrets from Nomad Variables ──────────────────────────────
       #
-      # Uncomment and adapt this block to pull GIT_TOKEN and GRPC_API_KEY from
+      # Uncomment and adapt this block to pull GIT_TOKEN and API_KEY from
       # a Nomad Variable rather than hardcoding them in env {}.
       #
       # First, create the variable:
       #   nomad var put nomad/jobs/nomad-botherer \
       #     GIT_TOKEN=ghp_... \
-      #     GRPC_API_KEY=your-long-random-key
+      #     API_KEY=your-long-random-key
       #
       # template {
       #   data        = <<-EOT
       #     {{ with nomadVar "nomad/jobs/nomad-botherer" }}
       #     GIT_TOKEN={{ .GIT_TOKEN }}
-      #     GRPC_API_KEY={{ .GRPC_API_KEY }}
+      #     API_KEY={{ .API_KEY }}
       #     {{ end }}
       #   EOT
       #   destination = "secrets/env"

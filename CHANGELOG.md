@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.0 — 2026-06-02
+
+### Breaking changes
+
+- **gRPC API and `nbctl` CLI removed.** The gRPC server, proto definitions,
+  generated bindings, and the `nbctl` CLI are gone. The `--grpc-listen-addr`
+  and `--grpc-api-key` flags are removed.
+
+### New features
+
+- **JSON API** (`/api/v1/`): a plain HTTP/JSON API replaces the gRPC server.
+  Enable it by setting `--api-key` / `API_KEY`. All endpoints require
+  `Authorization: Bearer <key>`. Available endpoints:
+  - `GET /api/v1/diffs` — current job diffs
+  - `GET /api/v1/selected-jobs` — jobs selected for monitoring and why
+  - `GET /api/v1/status` — git watcher status
+  - `GET /api/v1/version` — build version / commit / date
+  - `POST /api/v1/refresh` — trigger immediate git pull
+  - `GET /api/openapi.json` — OpenAPI 3.0 spec (public, no auth required)
+
 ## v0.3.0 — 2026-06-02
 
 ### Breaking changes

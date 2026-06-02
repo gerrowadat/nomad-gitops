@@ -307,6 +307,101 @@ func TestE2E_APIRefresh(t *testing.T) {
 	t.Error("POST /api/v1/refresh did not cause the git commit to advance within 20s")
 }
 
+// TestE2E_APISelectedJobs verifies GET /api/v1/selected-jobs returns the list
+// of watched jobs when at least one job is selected by glob.
+func TestE2E_APISelectedJobs(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	apiKey := "selj-key-" + randomSuffix()
+
+	jobID := uniqueJobID("e2e-selj")
+	commitToGit(t, workDir, map[string]string{
+		jobID + ".hcl": testJobHCL(jobID),
+	})
+	registerJobHCL(t, testJobHCL(jobID))
+	waitForJobStatus(t, jobID, "running", 30*time.Second)
+
+	baseURL := startBothererWithAPI(t, apiKey,
+		"--repo-url="+repoURL,
+		"--branch="+branch,
+		"--job-selector-glob="+jobID,
+	)
+
+	var result struct {
+		Jobs []struct {
+			JobID  string `json:"job_id"`
+			Reason string `json:"selection_reason"`
+		} `json:"jobs"`
+	}
+	apiGet(t, baseURL+"/api/v1/selected-jobs", apiKey, &result)
+
+	found := false
+	for _, j := range result.Jobs {
+		if j.JobID == jobID {
+			found = true
+			if j.Reason != "glob" {
+				t.Errorf("job %q: want reason=glob, got %q", jobID, j.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("job %q not found in /api/v1/selected-jobs: %+v", jobID, result.Jobs)
+	}
+}
+
+// TestE2E_APIVersion verifies GET /api/v1/version returns build metadata.
+func TestE2E_APIVersion(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	apiKey := "ver-key-" + randomSuffix()
+	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# no jobs"})
+
+	baseURL := startBothererWithAPI(t, apiKey,
+		"--repo-url="+repoURL,
+		"--branch="+branch,
+		"--job-selector-glob=does-not-exist",
+	)
+
+	var result struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	apiGet(t, baseURL+"/api/v1/version", apiKey, &result)
+
+	if result.Version == "" {
+		t.Error("version should not be empty")
+	}
+	if result.Commit == "" {
+		t.Error("commit should not be empty")
+	}
+}
+
+// TestE2E_APISpec verifies GET /api/openapi.json is public and returns a valid
+// OpenAPI document.
+func TestE2E_APISpec(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	apiKey := "spec-key-" + randomSuffix()
+	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# no jobs"})
+
+	baseURL := startBothererWithAPI(t, apiKey,
+		"--repo-url="+repoURL,
+		"--branch="+branch,
+		"--job-selector-glob=does-not-exist",
+	)
+
+	// No Authorization header — spec is public.
+	resp, err := http.Get(baseURL + "/api/openapi.json")
+	if err != nil {
+		t.Fatalf("GET /api/openapi.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"openapi"`) {
+		t.Error("spec response should contain openapi field")
+	}
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 // apiGet makes an authenticated GET request and decodes the JSON response into v.

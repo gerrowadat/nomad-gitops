@@ -476,7 +476,7 @@ func gatherCounter(t *testing.T, reg *prometheus.Registry, name string) float64 
 	return total
 }
 
-// ── Mock sources (for server/gRPC unit-style security tests) ─────────────────
+// ── Mock sources (for server unit-style security tests) ──────────────────────
 
 type mockDiffSource struct {
 	ready bool
