@@ -490,3 +490,38 @@ func TestLoadFromArgs_JobSelectorGlobEnv(t *testing.T) {
 		t.Errorf("JobSelectorGlob: want myapp-*, got %q", cfg.JobSelectorGlob)
 	}
 }
+
+func TestLoadFromArgs_ManagedMetaHCLCanonicalDefault(t *testing.T) {
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ManagedMetaHCLCanonical {
+		t.Error("ManagedMetaHCLCanonical: want false (Nomad-canonical by default), got true")
+	}
+}
+
+func TestLoadFromArgs_ManagedMetaHCLCanonicalFlag(t *testing.T) {
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--managed-meta-hcl-canonical",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ManagedMetaHCLCanonical {
+		t.Error("ManagedMetaHCLCanonical: want true after --managed-meta-hcl-canonical flag, got false")
+	}
+}
+
+func TestLoadFromArgs_ManagedMetaHCLCanonicalEnv(t *testing.T) {
+	os.Setenv("MANAGED_META_HCL_CANONICAL", "true")
+	t.Cleanup(func() { os.Unsetenv("MANAGED_META_HCL_CANONICAL") })
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ManagedMetaHCLCanonical {
+		t.Error("ManagedMetaHCLCanonical: want true from env var, got false")
+	}
+}

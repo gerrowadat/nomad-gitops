@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0 — 2026-06-02
+
+### Breaking changes
+
+- **Nomad job meta is now the source of truth for managed-meta-prefix selection.**
+  Previously, if the HCL file for a job declared `gitops_managed = "true"` but
+  the running Nomad job did not carry that key, the job was still selected and
+  diffed. Now the live Nomad job's meta is checked instead. A job is only
+  selected if the running job carries `gitops_managed = "true"` (or whichever
+  key the configured prefix produces).
+
+  The HCL meta is used as a fallback for jobs that do not yet exist in Nomad
+  (so new jobs are still detected as `missing_from_nomad`).
+
+  To restore the previous behaviour, set `--managed-meta-hcl-canonical`
+  (`MANAGED_META_HCL_CANONICAL=true`).
+
 ## v0.2.0 — 2026-06-02
 
 ### Breaking changes
