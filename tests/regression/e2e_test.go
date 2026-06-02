@@ -169,8 +169,45 @@ func TestE2E_WebhookTriggersRefresh(t *testing.T) {
 	t.Errorf("webhook did not trigger drift detection within 30s; last diff_count=%d", lastCount)
 }
 
-// TestE2E_GRPCGetDiffs starts the full binary with the gRPC server enabled,
-// registers a drifting job, and verifies GetDiffs returns it over gRPC.
+// TestE2E_GRPCDisabledByDefault verifies that when --grpc-listen-addr is not
+// set (the default), no gRPC server is started. An RPC call to any unbound
+// port should fail; this confirms the server is absent, not just unreachable.
+func TestE2E_GRPCDisabledByDefault(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# no jobs"})
+
+	// Start without --grpc-listen-addr. gRPC is disabled by default.
+	startBotherer(t,
+		"--repo-url="+repoURL,
+		"--branch="+branch,
+		"--job-selector-glob=does-not-exist",
+	)
+
+	// Pick a port after the binary has started — nothing should be bound to it.
+	probeAddr := fmt.Sprintf("127.0.0.1:%d", freePort())
+
+	conn, err := grpc.NewClient(probeAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	client := grpcapi.NewNomadBothererClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer anything"))
+
+	_, rpcErr := client.GetDiffs(ctx, &grpcapi.GetDiffsRequest{})
+	if rpcErr == nil {
+		t.Error("gRPC call to unbound port succeeded — is something else listening?")
+	}
+	// Any transport error (connection refused, deadline exceeded) confirms no server.
+}
+
+// TestE2E_GRPCGetDiffs starts the full binary with the gRPC server explicitly
+// enabled, registers a drifting job, and verifies GetDiffs returns it over gRPC.
 func TestE2E_GRPCGetDiffs(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)
 	apiKey := "grpc-test-key-" + randomSuffix()

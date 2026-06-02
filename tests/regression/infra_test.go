@@ -518,7 +518,6 @@ func startBotherer(t *testing.T, extraArgs ...string) string {
 
 	args := append([]string{
 		fmt.Sprintf("--listen-addr=127.0.0.1:%d", httpPort),
-		"--grpc-listen-addr=", // disable gRPC
 		"--nomad-addr=" + testNomadAddr,
 		"--log-level=error",
 		"--diff-interval=2s",
