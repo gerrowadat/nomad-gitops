@@ -59,6 +59,45 @@ func newDiffsCmd(cfg *rootConfig) *cobra.Command {
 	}
 }
 
+func newSelectedJobsCmd(cfg *rootConfig) *cobra.Command {
+	return &cobra.Command{
+		Use:   "selected-jobs",
+		Short: "List jobs currently selected for monitoring, and why each matched",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, close, err := cfg.dial()
+			if err != nil {
+				return err
+			}
+			defer close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+			defer cancel()
+
+			resp, err := client.GetSelectedJobs(ctx, &grpcapi.GetSelectedJobsRequest{})
+			if err != nil {
+				return fmt.Errorf("GetSelectedJobs: %w", err)
+			}
+
+			return printOutput(cmd.OutOrStdout(), cfg.outFmt, resp, func(w io.Writer) {
+				if len(resp.Jobs) == 0 {
+					fmt.Fprintln(w, "no jobs currently selected")
+				} else {
+					fmt.Fprintf(w, "%d job(s) selected\n", len(resp.Jobs))
+				}
+				if resp.LastCheckTime != "" {
+					fmt.Fprintf(w, "last check:  %s\n", resp.LastCheckTime)
+				}
+				if resp.LastCommit != "" {
+					fmt.Fprintf(w, "last commit: %s\n", resp.LastCommit)
+				}
+				for _, j := range resp.Jobs {
+					fmt.Fprintf(w, "  %-40s  %s\n", j.JobId, j.SelectionReason)
+				}
+			})
+		},
+	}
+}
+
 func newStatusCmd(cfg *rootConfig) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",

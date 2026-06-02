@@ -25,6 +25,7 @@ import (
 // DiffSource is satisfied by *nomad.Differ.
 type DiffSource interface {
 	Diffs() ([]nomad.JobDiff, time.Time, string)
+	SelectedJobs() ([]nomad.SelectedJob, time.Time, string)
 	// Ready reports whether at least one diff check has completed.
 	Ready() bool
 }
@@ -169,6 +170,32 @@ func (s *Server) GetDiffs(_ context.Context, _ *grpcapi.GetDiffsRequest) (*grpca
 
 	resp := &grpcapi.GetDiffsResponse{
 		Diffs:      pbDiffs,
+		LastCommit: lastCommit,
+	}
+	if !lastCheck.IsZero() {
+		resp.LastCheckTime = lastCheck.UTC().Format(time.RFC3339)
+	}
+	return resp, nil
+}
+
+// GetSelectedJobs returns the jobs that matched the configured selection criteria
+// during the last check, together with the reason each was included.
+func (s *Server) GetSelectedJobs(_ context.Context, _ *grpcapi.GetSelectedJobsRequest) (*grpcapi.GetSelectedJobsResponse, error) {
+	if !s.git.Ready() || !s.diffs.Ready() {
+		return nil, status.Error(codes.Unavailable, "server is not ready: initial state not yet built")
+	}
+	jobs, lastCheck, lastCommit := s.diffs.SelectedJobs()
+
+	pbJobs := make([]*grpcapi.SelectedJob, 0, len(jobs))
+	for _, j := range jobs {
+		pbJobs = append(pbJobs, &grpcapi.SelectedJob{
+			JobId:           j.JobID,
+			SelectionReason: string(j.Reason),
+		})
+	}
+
+	resp := &grpcapi.GetSelectedJobsResponse{
+		Jobs:       pbJobs,
 		LastCommit: lastCommit,
 	}
 	if !lastCheck.IsZero() {

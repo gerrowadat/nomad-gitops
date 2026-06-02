@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NomadBotherer_GetDiffs_FullMethodName       = "/nomad_botherer.v1.NomadBotherer/GetDiffs"
-	NomadBotherer_GetStatus_FullMethodName      = "/nomad_botherer.v1.NomadBotherer/GetStatus"
-	NomadBotherer_TriggerRefresh_FullMethodName = "/nomad_botherer.v1.NomadBotherer/TriggerRefresh"
-	NomadBotherer_GetVersion_FullMethodName     = "/nomad_botherer.v1.NomadBotherer/GetVersion"
+	NomadBotherer_GetDiffs_FullMethodName        = "/nomad_botherer.v1.NomadBotherer/GetDiffs"
+	NomadBotherer_GetSelectedJobs_FullMethodName = "/nomad_botherer.v1.NomadBotherer/GetSelectedJobs"
+	NomadBotherer_GetStatus_FullMethodName       = "/nomad_botherer.v1.NomadBotherer/GetStatus"
+	NomadBotherer_TriggerRefresh_FullMethodName  = "/nomad_botherer.v1.NomadBotherer/TriggerRefresh"
+	NomadBotherer_GetVersion_FullMethodName      = "/nomad_botherer.v1.NomadBotherer/GetVersion"
 )
 
 // NomadBothererClient is the client API for NomadBotherer service.
@@ -33,6 +34,9 @@ const (
 type NomadBothererClient interface {
 	// GetDiffs returns the current set of job diffs detected between git and Nomad.
 	GetDiffs(ctx context.Context, in *GetDiffsRequest, opts ...grpc.CallOption) (*GetDiffsResponse, error)
+	// GetSelectedJobs returns all jobs that matched the configured selection
+	// criteria during the last check, together with the reason each was included.
+	GetSelectedJobs(ctx context.Context, in *GetSelectedJobsRequest, opts ...grpc.CallOption) (*GetSelectedJobsResponse, error)
 	// GetStatus returns git watcher status (last commit, last update time).
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	// TriggerRefresh causes an immediate git pull and diff check.
@@ -53,6 +57,16 @@ func (c *nomadBothererClient) GetDiffs(ctx context.Context, in *GetDiffsRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetDiffsResponse)
 	err := c.cc.Invoke(ctx, NomadBotherer_GetDiffs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nomadBothererClient) GetSelectedJobs(ctx context.Context, in *GetSelectedJobsRequest, opts ...grpc.CallOption) (*GetSelectedJobsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSelectedJobsResponse)
+	err := c.cc.Invoke(ctx, NomadBotherer_GetSelectedJobs_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +111,9 @@ func (c *nomadBothererClient) GetVersion(ctx context.Context, in *GetVersionRequ
 type NomadBothererServer interface {
 	// GetDiffs returns the current set of job diffs detected between git and Nomad.
 	GetDiffs(context.Context, *GetDiffsRequest) (*GetDiffsResponse, error)
+	// GetSelectedJobs returns all jobs that matched the configured selection
+	// criteria during the last check, together with the reason each was included.
+	GetSelectedJobs(context.Context, *GetSelectedJobsRequest) (*GetSelectedJobsResponse, error)
 	// GetStatus returns git watcher status (last commit, last update time).
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	// TriggerRefresh causes an immediate git pull and diff check.
@@ -115,6 +132,9 @@ type UnimplementedNomadBothererServer struct{}
 
 func (UnimplementedNomadBothererServer) GetDiffs(context.Context, *GetDiffsRequest) (*GetDiffsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDiffs not implemented")
+}
+func (UnimplementedNomadBothererServer) GetSelectedJobs(context.Context, *GetSelectedJobsRequest) (*GetSelectedJobsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSelectedJobs not implemented")
 }
 func (UnimplementedNomadBothererServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
@@ -160,6 +180,24 @@ func _NomadBotherer_GetDiffs_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NomadBothererServer).GetDiffs(ctx, req.(*GetDiffsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NomadBotherer_GetSelectedJobs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSelectedJobsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NomadBothererServer).GetSelectedJobs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NomadBotherer_GetSelectedJobs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NomadBothererServer).GetSelectedJobs(ctx, req.(*GetSelectedJobsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -228,6 +266,10 @@ var NomadBotherer_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDiffs",
 			Handler:    _NomadBotherer_GetDiffs_Handler,
+		},
+		{
+			MethodName: "GetSelectedJobs",
+			Handler:    _NomadBotherer_GetSelectedJobs_Handler,
 		},
 		{
 			MethodName: "GetStatus",

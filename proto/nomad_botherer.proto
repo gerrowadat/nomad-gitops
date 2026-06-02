@@ -9,6 +9,10 @@ service NomadBotherer {
   // GetDiffs returns the current set of job diffs detected between git and Nomad.
   rpc GetDiffs(GetDiffsRequest) returns (GetDiffsResponse);
 
+  // GetSelectedJobs returns all jobs that matched the configured selection
+  // criteria during the last check, together with the reason each was included.
+  rpc GetSelectedJobs(GetSelectedJobsRequest) returns (GetSelectedJobsResponse);
+
   // GetStatus returns git watcher status (last commit, last update time).
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
@@ -37,6 +41,23 @@ message JobDiff {
   string diff_type = 3;
   // Human-readable summary of the diff (nomad plan output excerpt).
   string detail = 4;
+}
+
+message GetSelectedJobsRequest {}
+
+message GetSelectedJobsResponse {
+  repeated SelectedJob jobs = 1;
+  // RFC3339 timestamp of the last diff check.
+  string last_check_time = 2;
+  // Git commit hash that was current during the last diff check.
+  string last_commit = 3;
+}
+
+// SelectedJob records a job that matched the configured selection criteria.
+message SelectedJob {
+  string job_id = 1;
+  // One of: glob, meta, both.
+  string selection_reason = 2;
 }
 
 message GetStatusRequest {}

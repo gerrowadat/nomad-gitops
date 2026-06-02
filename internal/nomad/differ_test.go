@@ -1054,3 +1054,96 @@ func TestDiffer_NoSelection_NoJobsWatched(t *testing.T) {
 		t.Errorf("expected 0 diffs with no selection criteria, got %d: %+v", len(diffs), diffs)
 	}
 }
+
+// TestDiffer_SelectedJobs_MetaReason verifies that a job selected via the meta
+// key is returned by SelectedJobs with reason "meta".
+func TestDiffer_SelectedJobs_MetaReason(t *testing.T) {
+	mock := defaultMock()
+	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
+		return &nomadapi.Job{ID: strPtr("meta-job"), Meta: map[string]string{"gitops_managed": "true"}}, nil
+	}
+	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
+		return nil, nil, fmt.Errorf("404: not found")
+	}
+	d := newTestDifferWithSelection(mock, "", "gitops")
+
+	if err := d.Check(map[string]string{"meta-job.hcl": `job "meta-job" {}`}, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _, _ := d.SelectedJobs()
+	if len(jobs) != 1 || jobs[0].JobID != "meta-job" || jobs[0].Reason != nomad.SelectionReasonMeta {
+		t.Errorf("want 1 job with reason meta, got %+v", jobs)
+	}
+}
+
+// TestDiffer_SelectedJobs_GlobReason verifies that a job selected via the glob
+// is returned by SelectedJobs with reason "glob".
+func TestDiffer_SelectedJobs_GlobReason(t *testing.T) {
+	mock := defaultMock()
+	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
+		return &nomadapi.Job{ID: strPtr("prod-api"), Meta: nil}, nil
+	}
+	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
+		return nil, nil, fmt.Errorf("404: not found")
+	}
+	d := newTestDifferWithSelection(mock, "prod-*", "")
+
+	if err := d.Check(map[string]string{"prod-api.hcl": `job "prod-api" {}`}, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _, _ := d.SelectedJobs()
+	if len(jobs) != 1 || jobs[0].JobID != "prod-api" || jobs[0].Reason != nomad.SelectionReasonGlob {
+		t.Errorf("want 1 job with reason glob, got %+v", jobs)
+	}
+}
+
+// TestDiffer_SelectedJobs_BothReason verifies that a job matching both the glob
+// and the meta key is returned with reason "both".
+func TestDiffer_SelectedJobs_BothReason(t *testing.T) {
+	mock := defaultMock()
+	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
+		return &nomadapi.Job{ID: strPtr("prod-api"), Meta: map[string]string{"gitops_managed": "true"}}, nil
+	}
+	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
+		return nil, nil, fmt.Errorf("404: not found")
+	}
+	d := newTestDifferWithSelection(mock, "prod-*", "gitops")
+
+	if err := d.Check(map[string]string{"prod-api.hcl": `job "prod-api" {}`}, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _, _ := d.SelectedJobs()
+	if len(jobs) != 1 || jobs[0].JobID != "prod-api" || jobs[0].Reason != nomad.SelectionReasonBoth {
+		t.Errorf("want 1 job with reason both, got %+v", jobs)
+	}
+}
+
+// TestDiffer_SelectedJobs_NoDuplicates verifies that a job appearing in both the
+// HCL phase and the Nomad list phase is returned only once.
+func TestDiffer_SelectedJobs_NoDuplicates(t *testing.T) {
+	mock := defaultMock()
+	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
+		return &nomadapi.Job{ID: strPtr("shared-job"), Meta: map[string]string{"gitops_managed": "true"}}, nil
+	}
+	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
+		s := "running"
+		return &nomadapi.Job{ID: strPtr("shared-job"), Status: &s}, nil, nil
+	}
+	mock.listFn = func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
+		return []*nomadapi.JobListStub{
+			{ID: "shared-job", Status: "running", Meta: map[string]string{"gitops_managed": "true"}},
+		}, nil, nil
+	}
+	mock.planFn = func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error) {
+		return &nomadapi.JobPlanResponse{}, nil, nil
+	}
+	d := newTestDifferWithSelection(mock, "", "gitops")
+
+	if err := d.Check(map[string]string{"shared-job.hcl": `job "shared-job" {}`}, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _, _ := d.SelectedJobs()
+	if len(jobs) != 1 {
+		t.Errorf("want 1 unique selected job, got %d: %+v", len(jobs), jobs)
+	}
+}

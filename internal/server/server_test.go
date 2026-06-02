@@ -23,13 +23,18 @@ import (
 
 // mockDiffSource implements server.DiffSource.
 type mockDiffSource struct {
-	diffs      []nomad.JobDiff
-	lastCheck  time.Time
-	lastCommit string
+	diffs        []nomad.JobDiff
+	selectedJobs []nomad.SelectedJob
+	lastCheck    time.Time
+	lastCommit   string
 }
 
 func (m *mockDiffSource) Diffs() ([]nomad.JobDiff, time.Time, string) {
 	return m.diffs, m.lastCheck, m.lastCommit
+}
+
+func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string) {
+	return m.selectedJobs, m.lastCheck, m.lastCommit
 }
 
 func (m *mockDiffSource) Ready() bool { return !m.lastCheck.IsZero() }
@@ -702,5 +707,62 @@ func TestHandler_ConsistentReturn(t *testing.T) {
 	h2 := srv.Handler()
 	if h1 != h2 {
 		t.Error("Handler() should return the same http.Handler on repeated calls")
+	}
+}
+
+// ── / selected jobs ───────────────────────────────────────────────────────────
+
+func newTestServerWithSelectedJobs(t *testing.T, jobs []nomad.SelectedJob) *server.Server {
+	t.Helper()
+	cfg := &config.Config{
+		ListenAddr:  ":0",
+		WebhookPath: "/webhook",
+		Branch:      "main",
+	}
+	diffSrc := &mockDiffSource{
+		selectedJobs: jobs,
+		lastCheck:    time.Now(),
+		lastCommit:   "deadbeef",
+	}
+	gitSrc := &mockGitSource{lastCommit: "deadbeef", lastUpdate: time.Now()}
+	return server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+}
+
+func TestIndex_SelectedJobs_Shown(t *testing.T) {
+	jobs := []nomad.SelectedJob{
+		{JobID: "api", Reason: nomad.SelectionReasonMeta},
+		{JobID: "worker", Reason: nomad.SelectionReasonGlob},
+	}
+	srv := newTestServerWithSelectedJobs(t, jobs)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "api") {
+		t.Error("index page should list job 'api'")
+	}
+	if !strings.Contains(body, "worker") {
+		t.Error("index page should list job 'worker'")
+	}
+	if !strings.Contains(body, "meta") {
+		t.Error("index page should show selection reason 'meta'")
+	}
+	if !strings.Contains(body, "glob") {
+		t.Error("index page should show selection reason 'glob'")
+	}
+	if !strings.Contains(body, "Selected jobs (2)") {
+		t.Error("index page should show selected jobs count")
+	}
+}
+
+func TestIndex_NoSelectedJobs_SectionAbsent(t *testing.T) {
+	srv := newTestServerWithSelectedJobs(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "Selected jobs") {
+		t.Error("index page should not show selected-jobs section when there are no selected jobs")
 	}
 }
