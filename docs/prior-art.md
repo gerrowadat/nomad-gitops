@@ -141,7 +141,7 @@ prevents the plan-then-register race that neither existing operator handles.
 
 **Opt-in scope via job meta.** Rather than managing every job found in the repo
 or every job tagged with an operator-specific key the tool wrote, the intent is
-to require an explicit `gitops.managed = "true"` key in the job's HCL meta
+to require an explicit `gitops_managed = "true"` key in the job's HCL meta
 stanza. This is the "Operator Pattern in Nomad" — the same model that scalad
 (trivago) uses for autoscaling opt-in and that Pondidum/nomad-operator
 documented for backup automation in 2021. A job without the opt-in key is never

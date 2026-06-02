@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.0 — 2026-06-02
+
+### Breaking changes
+
+- **Meta key separator changed from `.` to `_`.** The opt-in meta key is now
+  `gitops_managed = "true"` (previously `"gitops.managed" = "true"`). This
+  makes the key a valid HCL2 identifier, allowing the cleaner block form:
+
+  ```hcl
+  meta {
+    gitops_managed = "true"
+  }
+  ```
+
+  instead of the object-expression form with quoted keys. Any existing job HCL
+  using the old dotted key must be updated before upgrading. Jobs using the
+  previous key format will no longer be selected after this change.
+
+  The custom prefix configured via `--managed-meta-prefix` / `MANAGED_META_PREFIX`
+  works the same way: a prefix of `myorg` now produces `myorg_managed`.
+
 ## v0.1.2 — 2026-06-02
 
 ### Security fixes
@@ -11,7 +32,7 @@
 
 ### New features
 
-- **Job selection** (`--job-selector-glob`, `--managed-meta-prefix`): Two independent mechanisms for scoping which jobs nomad-botherer watches. `--job-selector-glob` selects by name pattern (e.g. `myteam-*`); `--managed-meta-prefix` selects jobs that carry a meta key with the given prefix (default `gitops`, meaning `gitops.managed = "true"` opts a job in). Jobs matching either selector are watched; jobs matching neither are ignored.
+- **Job selection** (`--job-selector-glob`, `--managed-meta-prefix`): Two independent mechanisms for scoping which jobs nomad-botherer watches. `--job-selector-glob` selects by name pattern (e.g. `myteam-*`); `--managed-meta-prefix` selects jobs that carry a meta key with the given prefix (default `gitops`, meaning `gitops.managed = "true"` opts a job in — note: renamed to `gitops_managed` in v0.2.0). Jobs matching either selector are watched; jobs matching neither are ignored.
 - **gRPC server disabled by default**: The gRPC server no longer binds to `:9090` on startup. Set `--grpc-listen-addr` (or `GRPC_LISTEN_ADDR`) to enable it. This avoids unexpected port conflicts and makes the `--grpc-api-key` requirement easier to enforce.
 
 ### Correctness

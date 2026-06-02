@@ -96,7 +96,7 @@ func TestSelection_GlobNoMatch(t *testing.T) {
 	}
 }
 
-// TestSelection_MetaKey verifies that a job with the gitops.managed=true meta
+// TestSelection_MetaKey verifies that a job with the gitops_managed=true meta
 // key is selected by the meta-prefix selector.
 func TestSelection_MetaKey(t *testing.T) {
 	jobID := uniqueJobID("meta-sel")

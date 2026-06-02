@@ -884,7 +884,7 @@ func TestDiffer_MetaSelection_Matches(t *testing.T) {
 	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
 		return &nomadapi.Job{
 			ID:   strPtr("managed-job"),
-			Meta: map[string]string{"gitops.managed": "true"},
+			Meta: map[string]string{"gitops_managed": "true"},
 		}, nil
 	}
 	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
@@ -920,13 +920,13 @@ func TestDiffer_MetaSelection_NoTag_JobSkipped(t *testing.T) {
 }
 
 // TestDiffer_MetaSelection_CustomPrefix verifies that a custom meta prefix works,
-// deriving the full key as "<prefix>.managed".
+// deriving the full key as "<prefix>_managed".
 func TestDiffer_MetaSelection_CustomPrefix(t *testing.T) {
 	mock := defaultMock()
 	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
 		return &nomadapi.Job{
 			ID:   strPtr("my-job"),
-			Meta: map[string]string{"myorg.managed": "true"},
+			Meta: map[string]string{"myorg_managed": "true"},
 		}, nil
 	}
 	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
@@ -953,7 +953,7 @@ func TestDiffer_GlobOrMeta_EitherSelects(t *testing.T) {
 		}
 		return &nomadapi.Job{
 			ID:   strPtr("by-meta"),
-			Meta: map[string]string{"gitops.managed": "true"},
+			Meta: map[string]string{"gitops_managed": "true"},
 		}, nil
 	}
 	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
@@ -980,7 +980,7 @@ func TestDiffer_MissingFromHCL_ManagedByMeta_Reported(t *testing.T) {
 	mock := defaultMock()
 	mock.listFn = func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
 		return []*nomadapi.JobListStub{
-			{ID: "managed-orphan", Status: "running", Meta: map[string]string{"gitops.managed": "true"}},
+			{ID: "managed-orphan", Status: "running", Meta: map[string]string{"gitops_managed": "true"}},
 		}, nil, nil
 	}
 	d := newTestDifferWithSelection(mock, "", "gitops")

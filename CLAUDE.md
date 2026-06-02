@@ -58,7 +58,7 @@ Never register without a CAS token. The apply path is:
 the write because the index changed, mark the update failed, trigger a fresh
 diff, and let the next cycle produce a new update with current state.
 
-**Opt-in scope via job meta.** Jobs must declare `meta { "gitops.managed" =
+**Opt-in scope via job meta.** Jobs must declare `meta { "gitops_managed" =
 "true" }` in their HCL to be managed by nomad-botherer. A job without this key
 is never diffed for application purposes, never registered, and never
 deregistered — even if it is running in Nomad without a corresponding HCL file.
@@ -66,7 +66,7 @@ This is the "Operator Pattern in Nomad" (see scalad, Pondidum/nomad-operator).
 Do not change this default without a strong reason; it is what prevents
 nomad-botherer from touching manually-managed jobs on a shared cluster.
 
-**Separate the two uses of job meta.** The `gitops.managed` flag is set by
+**Separate the two uses of job meta.** The `gitops_managed` flag is set by
 humans in HCL and read by the tool — that is fine. Writing tool state (applied
 commit, timestamps, status) back into the live job's meta is a different thing
 and causes the meta-drift problem: the next `nomad job run` from plain HCL
@@ -87,7 +87,7 @@ shape. Updates for the same job that arrive while a prior update is still pendin
 should be marked `SUPERSEDED`; the most recent intended state wins.
 
 **Conservative deletion.** `missing_from_hcl` is an observation today. When
-deregister is implemented, it should require: (a) `gitops.managed = "true"` on
+deregister is implemented, it should require: (a) `gitops_managed = "true"` on
 the live job (confirming the operator previously registered it), and (b) probably
 an explicit config flag to enable deregister at all. Purge (`purge=true` in the
 Nomad API) should not be the default.
@@ -138,7 +138,7 @@ Use these terms consistently so the code and docs match:
 | `JobUpdate` | An intended transition: a planned change to apply to Nomad. Not yet implemented. |
 | `JobUpdateOperation` | `REGISTER` or `DEREGISTER` |
 | `JobUpdateStatus` | `PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED` |
-| opt-in key | `gitops.managed = "true"` in job HCL meta — scope selector, never written by the tool |
+| opt-in key | `gitops_managed = "true"` in job HCL meta — scope selector, never written by the tool |
 | meta-drift | The problem of tool-written meta keys being clobbered by the next human `nomad job run` |
 | `CheckpointStore` | Interface for persisting update queue state across restarts |
 | Raft index | `QueryMeta.LastIndex` from `Jobs.List()` — used for skip optimisation, not locking |

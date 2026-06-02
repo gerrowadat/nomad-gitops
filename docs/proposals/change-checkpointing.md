@@ -210,7 +210,7 @@ to GitOps management by declaring a meta key in their HCL:
 ```hcl
 job "api-server" {
   meta {
-    "gitops.managed" = "true"
+    gitops_managed = "true"
   }
   # rest of job spec
 }
@@ -218,7 +218,7 @@ job "api-server" {
 
 nomad-botherer reads this key from both the parsed HCL and the live job
 (`Jobs.Info()`) to decide whether to include a job in its reconciliation scope.
-A job without `gitops.managed = "true"` is skipped entirely — no diff, no
+A job without `gitops_managed = "true"` is skipped entirely — no diff, no
 apply, no deregister. The meta key is a scope selector, not a state store.
 
 This is a direct application of what the Nomad community calls the **Operator
@@ -261,18 +261,19 @@ for identity and selection (controllers use `labelSelector` to query), while
 annotations carry per-object configuration. It also mandates DNS-subdomain
 prefixes (e.g., `cert-manager.io/`) to prevent key collisions between tools.
 Nomad has no equivalent formal convention. The observed practice across the
-tools above is a short tool-name prefix with a dot separator (`gitops.managed`,
-`scaler`, `auto-backup`). Key naming is worth being deliberate about: keys
-containing characters outside `[A-Za-z0-9_.]` are silently converted to
-underscores when exposed as `NOMAD_META_*` environment variables inside tasks,
-though the original form is preserved in the API response.
+tools above is a short tool-name prefix with a separator (`gitops_managed`,
+`scaler`, `auto_backup`). Key naming is worth being deliberate about: using
+underscores keeps meta keys valid HCL2 identifiers, allowing the block form
+(`meta { gitops_managed = "true" }`) rather than the object-expression form with
+quoted keys. Keys are exposed as `NOMAD_META_*` environment variables inside
+tasks using the original form.
 
 **Separating opt-in from state storage**
 
 The version of this alternative described in earlier drafts conflated two
 distinct uses of the `Meta` map:
 
-1. **Opt-in flag** (set by humans in HCL, read by the tool): `gitops.managed =
+1. **Opt-in flag** (set by humans in HCL, read by the tool): `gitops_managed =
    "true"`. The human controls this; it lives in the HCL file and is therefore
    version-controlled. Safe and stable.
 
@@ -298,7 +299,7 @@ and controls; store applied state in Nomad Variables (Alternative 1).
 // jobs/api-server.hcl (human-controlled, version-controlled)
 job "api-server" {
   meta {
-    "gitops.managed" = "true"
+    gitops_managed = "true"
   }
 }
 ```
@@ -306,10 +307,10 @@ job "api-server" {
 nomad-botherer behaviour with this flag:
 
 - Include a job in the diff scope if and only if its HCL file or its live
-  `Jobs.Info()` response contains `meta["gitops.managed"] == "true"`.
+  `Jobs.Info()` response contains `meta["gitops_managed"] == "true"`.
 - Store checkpoint state in Nomad Variables (Alternative 1). Never write back
   to the job's `meta` stanza.
-- A live job that does not have `gitops.managed` is never flagged as
+- A live job that does not have `gitops_managed` is never flagged as
   `missing_from_hcl`, even if it has no corresponding HCL file. This prevents
   nomad-botherer from attempting to deregister manually-registered jobs.
 
@@ -319,8 +320,8 @@ nomad-botherer behaviour with this flag:
 narrower scope:
 
 - For HCL files: include only files whose parsed job spec has
-  `meta["gitops.managed"] == "true"`.
-- For live Nomad jobs: include only jobs with `meta["gitops.managed"] == "true"`
+  `meta["gitops_managed"] == "true"`.
+- For live Nomad jobs: include only jobs with `meta["gitops_managed"] == "true"`
   in their live spec.
 - The `missing_from_hcl` drift type becomes "a managed job (live meta has the
   flag) has no HCL file". This is a meaningful and intentional signal, not "any
@@ -328,7 +329,7 @@ narrower scope:
 
 The `missingFromNomad` type changes to "an HCL file has the opt-in key but the
 job does not exist in Nomad yet". The first registration also writes
-`gitops.managed = "true"` to the live job, which is already in the HCL, so
+`gitops_managed = "true"` to the live job, which is already in the HCL, so
 there is no meta drift from this write.
 
 **Pros**
@@ -346,7 +347,7 @@ there is no meta drift from this write.
 
 **Cons**
 
-- Every job that should be managed must have `gitops.managed = "true"` in its
+- Every job that should be managed must have `gitops_managed = "true"` in its
   HCL. Easy to forget; there is no directory-level default.
 - The key appears as `NOMAD_META_gitops_managed` in every allocation's
   environment, which is minor but visible noise.
@@ -390,7 +391,7 @@ layers on top of either of the other two rather than replacing them.
 
 Implement the hybrid of Alternative 3 + Alternative 1:
 
-1. Gate all GitOps behaviour behind the `gitops.managed = "true"` meta opt-in
+1. Gate all GitOps behaviour behind the `gitops_managed = "true"` meta opt-in
    (Alternative 3). This scopes the operator and prevents accidental deregistration
    of manually-managed jobs. It requires no infrastructure and works on any Nomad
    version.
@@ -406,7 +407,7 @@ The `CheckpointStore` interface above is the right abstraction boundary. Each
 alternative is an implementation of that interface; the update queue does not
 need to know which backend is active. The opt-in flag is orthogonal to this
 interface and should be a config-level default (`--gitops-opt-in-key`, default:
-`gitops.managed`) so teams can rename it if they have a key naming convention.
+`gitops_managed`) so teams can rename it if they have a key naming convention.
 
 ---
 

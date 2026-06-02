@@ -214,7 +214,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	managedMetaKey := ""
 	if s.cfg.ManagedMetaPrefix != "" {
-		managedMetaKey = s.cfg.ManagedMetaPrefix + ".managed"
+		managedMetaKey = s.cfg.ManagedMetaPrefix + "_managed"
 	}
 
 	data := struct {

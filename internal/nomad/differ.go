@@ -188,7 +188,7 @@ func NewWithClientAndRegistry(cfg *config.Config, jobs NomadJobsClient, reg prom
 
 // jobIsSelected reports whether a job should be watched. A job is selected when
 // its ID matches the configured glob pattern, or when its meta map contains
-// "<managedMetaPrefix>.managed" set to "true". If both are empty, no jobs
+// "<managedMetaPrefix>_managed" set to "true". If both are empty, no jobs
 // are selected.
 func (d *Differ) jobIsSelected(jobID string, meta map[string]string) bool {
 	if d.jobSelectorGlob != "" {
@@ -196,7 +196,7 @@ func (d *Differ) jobIsSelected(jobID string, meta map[string]string) bool {
 			return true
 		}
 	}
-	if d.managedMetaPrefix != "" && meta[d.managedMetaPrefix+".managed"] == "true" {
+	if d.managedMetaPrefix != "" && meta[d.managedMetaPrefix+"_managed"] == "true" {
 		return true
 	}
 	return false

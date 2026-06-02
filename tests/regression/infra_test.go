@@ -396,19 +396,17 @@ job %q {
 `, jobID)
 }
 
-// testJobHCLWithMeta adds a gitops meta key that marks the job as managed.
-// The meta key contains a dot (e.g. "gitops.managed"), which is not a valid
-// HCL2 identifier and therefore cannot appear as an unquoted attribute name in
-// a block body. Using the object-expression form (meta = { ... }) allows
-// quoted keys and is accepted by Nomad's ParseHCL endpoint.
+// testJobHCLWithMeta produces HCL that opts a job in to nomad-botherer via the
+// meta block. The key name is "<prefix>_managed" — a valid HCL2 identifier, so
+// the block form (meta { ... }) can be used without quoting.
 func testJobHCLWithMeta(jobID, metaPrefix string) string {
 	return fmt.Sprintf(`
 job %q {
   datacenters = ["dc1"]
   type        = "service"
 
-  meta = {
-    %q = "true"
+  meta {
+    %s = "true"
   }
 
   group "main" {
@@ -427,7 +425,7 @@ job %q {
     }
   }
 }
-`, jobID, metaPrefix+".managed")
+`, jobID, metaPrefix+"_managed")
 }
 
 // ── Differ helpers ────────────────────────────────────────────────────────────

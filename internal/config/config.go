@@ -82,7 +82,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.DurationVar(&c.DiffInterval, "diff-interval", envDurationOrDefault("DIFF_INTERVAL", time.Minute), "How often to run a diff check regardless of git changes")
 	fs.BoolVar(&c.IncludeDeadJobs, "include-dead-jobs", envBoolOrDefault("INCLUDE_DEAD_JOBS", false), "Treat dead Nomad jobs like running ones (by default dead jobs are treated as missing)")
 	fs.StringVar(&c.JobSelectorGlob, "job-selector-glob", envOrDefault("JOB_SELECTOR_GLOB", ""), "Glob pattern selecting jobs by name (e.g. 'myprefix-*', '*' for all). Jobs matching either this or --managed-meta-prefix are watched. Empty means no glob selection.")
-	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-botherer (e.g. 'gitops' means 'gitops.managed' opts a job in). Empty disables meta-based selection.")
+	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-botherer (e.g. 'gitops' means 'gitops_managed = true' opts a job in). Empty disables meta-based selection.")
 	fs.DurationVar(&c.MaxGitStaleness, "max-git-staleness", envDurationOrDefault("MAX_GIT_STALENESS", 0), "Maximum time since last successful git fetch before forcing a refresh (0 disables)")
 	fs.DurationVar(&c.MaxNomadStaleness, "max-nomad-staleness", envDurationOrDefault("MAX_NOMAD_STALENESS", 0), "Maximum time since last successful Nomad diff check before forcing a refresh (0 disables)")
 

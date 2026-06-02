@@ -106,13 +106,13 @@ more examples and [Configuration](#configuration) for the full flag reference.
 
 ### Opt jobs in to monitoring
 
-By default, nomad-botherer only watches jobs that declare a `gitops.managed`
+By default, nomad-botherer only watches jobs that declare a `gitops_managed`
 meta key. Add this to any job you want monitored:
 
 ```hcl
 job "my-service" {
-  meta = {
-    "gitops.managed" = "true"
+  meta {
+    gitops_managed = "true"
   }
   # ...
 }
@@ -169,16 +169,16 @@ nomad-botherer does not watch every job in a cluster by default. A job must matc
 | Name glob | `--job-selector-glob` | *(empty — no glob selection)* |
 | Meta prefix | `--managed-meta-prefix` | `gitops` |
 
-The two criteria are a **union**: a job is selected if it matches the glob *or* has the `<prefix>.managed` meta key set to `"true"`. With the defaults (no glob, prefix `gitops`), only jobs declaring `gitops.managed = "true"` in their HCL meta stanza are watched.
+The two criteria are a **union**: a job is selected if it matches the glob *or* has the `<prefix>_managed` meta key set to `"true"`. With the defaults (no glob, prefix `gitops`), only jobs declaring `gitops_managed = "true"` in their HCL meta stanza are watched.
 
-The prefix is a namespace for all meta keys nomad-botherer reads or writes. Using `gitops` means the opt-in key is `gitops.managed`, and future attributes will follow the same `gitops.<attribute>` pattern. Use a different prefix if another team or tool already owns `gitops.*` on your cluster.
+The prefix is a namespace for all meta keys nomad-botherer reads or writes. Using `gitops` means the opt-in key is `gitops_managed`, and future attributes will follow the same `gitops_<attribute>` pattern. Use a different prefix if another team or tool already owns `gitops_*` keys on your cluster.
 
 **Opting a job in via meta tag (default method):**
 
 ```hcl
 job "my-service" {
   meta {
-    "gitops.managed" = "true"
+    gitops_managed = "true"
   }
   # ...rest of job definition
 }
@@ -200,7 +200,7 @@ job "my-service" {
 
 ```bash
 ./nomad-botherer --managed-meta-prefix='myorg' ...
-# opts in jobs with meta { "myorg.managed" = "true" }
+# opts in jobs with meta { myorg_managed = "true" }
 ```
 
 **Disabling meta-based selection entirely** (glob only):
@@ -294,7 +294,7 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--diff-interval` | `DIFF_INTERVAL` | `1m` | Periodic Nomad-side drift check interval |
 | `--include-dead-jobs` | `INCLUDE_DEAD_JOBS` | `false` | Treat dead Nomad jobs like running ones (by default dead jobs count as missing) |
 | `--job-selector-glob` | `JOB_SELECTOR_GLOB` | *(empty — no glob)* | Glob pattern selecting jobs to watch by name (e.g. `myprefix-*`, `*` for all). Combined with `--managed-meta-prefix` as a union. |
-| `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-botherer. With prefix `gitops`, the key `gitops.managed=true` opts a job in. Empty disables meta-based selection. |
+| `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-botherer. With prefix `gitops`, the key `gitops_managed = "true"` opts a job in. Empty disables meta-based selection. |
 | `--max-git-staleness` | `MAX_GIT_STALENESS` | `0` (disabled) | If the git repo has not been successfully fetched within this window, force an immediate fetch. Set to `0` to disable. E.g. `--max-git-staleness=30m` |
 | `--max-nomad-staleness` | `MAX_NOMAD_STALENESS` | `0` (disabled) | If the Nomad diff check has not run within this window, force an immediate check. Set to `0` to disable. E.g. `--max-nomad-staleness=10m` |
 | `--log-level` | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
