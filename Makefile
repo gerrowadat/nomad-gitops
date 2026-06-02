@@ -1,49 +1,31 @@
-BINARY     := nomad-botherer
-CTL_BINARY := nbctl
-MODULE     := github.com/gerrowadat/nomad-botherer
-CMD        := ./cmd/nomad-botherer
-CTL_CMD    := ./cmd/nbctl
+BINARY  := nomad-botherer
+MODULE  := github.com/gerrowadat/nomad-botherer
+CMD     := ./cmd/nomad-botherer
 
 # Version is derived from the most recent git tag; falls back to "dev".
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILDDATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-LDFLAGS    := -X main.version=$(VERSION) \
-              -X main.commit=$(COMMIT) \
-              -X main.buildDate=$(BUILDDATE) \
-              -s -w
+LDFLAGS := -X main.version=$(VERSION) \
+           -X main.commit=$(COMMIT) \
+           -X main.buildDate=$(BUILDDATE) \
+           -s -w
 
-CTL_LDFLAGS := -X main.version=$(VERSION) -s -w
+IMAGE     ?= ghcr.io/gerrowadat/$(BINARY)
+PLATFORMS := linux/amd64,linux/arm64
 
-IMAGE      ?= ghcr.io/gerrowadat/$(BINARY)
-PLATFORMS  := linux/amd64,linux/arm64
-
-.PHONY: all build build-server build-ctl install install-server install-ctl test test-regression test-regression-versions lint generate clean docker docker-push release-patch release-minor release-major version
+.PHONY: all build install test test-regression test-regression-versions test-cover lint clean docker docker-push release-patch release-minor release-major version
 
 all: build
 
-## build: compile both binaries for the current platform
-build: build-server build-ctl
-
-## build-server: compile the nomad-botherer server
-build-server:
+## build: compile the server binary
+build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
-## build-ctl: compile the nbctl CLI
-build-ctl:
-	go build -ldflags "$(CTL_LDFLAGS)" -o $(CTL_BINARY) $(CTL_CMD)
-
-## install: install both binaries to $GOPATH/bin (or go install equivalent)
-install: install-server install-ctl
-
-## install-server: go install the server binary
-install-server:
+## install: install the server binary to $GOPATH/bin
+install:
 	go install -ldflags "$(LDFLAGS)" $(CMD)
-
-## install-ctl: go install the nbctl binary
-install-ctl:
-	go install -ldflags "$(CTL_LDFLAGS)" $(CTL_CMD)
 
 ## test: run all tests
 test:
@@ -73,21 +55,9 @@ test-cover:
 lint:
 	go vet ./...
 
-# Pinned tool versions — must match the versions recorded in the generated file headers.
-BUF_VERSION                := v1.68.4
-PROTOC_GEN_GO_VERSION      := v1.36.11
-PROTOC_GEN_GO_GRPC_VERSION := v1.6.1
-
-## generate: regenerate protobuf code from proto/nomad_botherer.proto
-generate:
-	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
-	buf generate
-
 ## clean: remove build artefacts
 clean:
-	rm -f $(BINARY) $(CTL_BINARY) coverage.out coverage.html
+	rm -f $(BINARY) coverage.out coverage.html
 
 ## version: print the current version
 version:

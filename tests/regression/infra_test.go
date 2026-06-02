@@ -542,23 +542,20 @@ func startBotherer(t *testing.T, extraArgs ...string) string {
 	return baseURL
 }
 
-// startBothererWithGRPC is like startBotherer but also enables the gRPC server.
-// Returns (httpBaseURL, grpcAddr).
-func startBothererWithGRPC(t *testing.T, apiKey string, extraArgs ...string) (string, string) {
+// startBothererWithAPI is like startBotherer but also enables the JSON API
+// by passing --api-key. Returns the HTTP base URL.
+func startBothererWithAPI(t *testing.T, apiKey string, extraArgs ...string) string {
 	t.Helper()
 	if testBinaryPath == "" {
 		t.Skip("nomad-botherer binary unavailable (build failed at test startup)")
 	}
 
 	httpPort := freePort()
-	grpcPort := freePort()
 	httpURL := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
-	grpcAddr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
 
 	args := append([]string{
 		fmt.Sprintf("--listen-addr=127.0.0.1:%d", httpPort),
-		fmt.Sprintf("--grpc-listen-addr=127.0.0.1:%d", grpcPort),
-		"--grpc-api-key=" + apiKey,
+		"--api-key=" + apiKey,
 		"--nomad-addr=" + testNomadAddr,
 		"--log-level=error",
 		"--diff-interval=2s",
@@ -572,7 +569,7 @@ func startBothererWithGRPC(t *testing.T, apiKey string, extraArgs ...string) (st
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		t.Fatalf("start botherer (gRPC): %v", err)
+		t.Fatalf("start botherer (with API): %v", err)
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -582,7 +579,7 @@ func startBothererWithGRPC(t *testing.T, apiKey string, extraArgs ...string) (st
 	if err := waitForHTTPStatus(httpURL+"/healthz", http.StatusOK, 60*time.Second); err != nil {
 		t.Fatalf("botherer not ready: %v", err)
 	}
-	return httpURL, grpcAddr
+	return httpURL
 }
 
 // waitForHTTPStatus polls url until it returns wantCode or timeout expires.

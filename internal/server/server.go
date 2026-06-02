@@ -40,35 +40,35 @@ type GitStatusSource interface {
 
 // Server holds the HTTP mux and all dependencies.
 type Server struct {
-	cfg     *config.Config
-	diffs   DiffSource
-	git     GitStatusSource
-	version string
-	mux     *http.ServeMux
+	cfg       *config.Config
+	diffs     DiffSource
+	git       GitStatusSource
+	buildInfo BuildInfo
+	mux       *http.ServeMux
 
-	webhookMu          sync.RWMutex
-	lastWebhookSuccess time.Time
-	lastWebhookFailure time.Time
+	webhookMu               sync.RWMutex
+	lastWebhookSuccess      time.Time
+	lastWebhookFailure      time.Time
 
 	// Prometheus metrics
-	webhookEvents          *prometheus.CounterVec
+	webhookEvents           *prometheus.CounterVec
 	lastWebhookSuccessGauge prometheus.Gauge
 	lastWebhookFailureGauge prometheus.Gauge
 }
 
 // New creates a Server that registers Prometheus metrics into the default registry.
-func New(cfg *config.Config, diffs DiffSource, git GitStatusSource, version string) *Server {
-	return NewWithRegistry(cfg, diffs, git, version, prometheus.DefaultRegisterer)
+func New(cfg *config.Config, diffs DiffSource, git GitStatusSource, info BuildInfo) *Server {
+	return NewWithRegistry(cfg, diffs, git, info, prometheus.DefaultRegisterer)
 }
 
 // NewWithRegistry creates a Server with a custom Prometheus Registerer.
 // Useful in tests to avoid duplicate-registration panics when creating multiple servers.
-func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, version string, reg prometheus.Registerer) *Server {
+func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, info BuildInfo, reg prometheus.Registerer) *Server {
 	s := &Server{
-		cfg:     cfg,
-		diffs:   diffs,
-		git:     git,
-		version: version,
+		cfg:       cfg,
+		diffs:     diffs,
+		git:       git,
+		buildInfo: info,
 
 		webhookEvents: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_webhook_events_total",
@@ -88,7 +88,7 @@ func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, 
 	promauto.With(reg).NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nomad_botherer_info",
 		Help: "Build information.",
-	}, []string{"version"}).WithLabelValues(version).Set(1)
+	}, []string{"version"}).WithLabelValues(info.Version).Set(1)
 
 	// Use the provided registry as the Prometheus gatherer if possible,
 	// otherwise fall back to the global default.
@@ -105,6 +105,21 @@ func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, 
 	s.mux.HandleFunc("/diffs", s.handleDiffs)
 	s.mux.Handle("/metrics", metricsHandler)
 	s.mux.HandleFunc(cfg.WebhookPath, s.handleWebhook())
+
+	// Mount authenticated JSON API if a key is configured.
+	if cfg.APIKey != "" {
+		apiMux := http.NewServeMux()
+		apiMux.HandleFunc("GET /api/v1/diffs", s.handleAPIDiffs)
+		apiMux.HandleFunc("GET /api/v1/selected-jobs", s.handleAPISelectedJobs)
+		apiMux.HandleFunc("GET /api/v1/status", s.handleAPIStatus)
+		apiMux.HandleFunc("GET /api/v1/version", s.handleAPIVersion)
+		apiMux.HandleFunc("POST /api/v1/refresh", s.handleAPIRefresh)
+		s.mux.Handle("/api/v1/", requireAPIKey(cfg.APIKey)(apiMux))
+		// OpenAPI spec is public — no auth required.
+		s.mux.HandleFunc("GET /api/openapi.json", s.handleAPISpec)
+	} else {
+		slog.Warn("API key not configured; /api/ endpoints are disabled. Set --api-key / API_KEY to enable.")
+	}
 
 	return s
 }
@@ -249,7 +264,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		SelectionGlob   string
 		ManagedMetaKey  string
 	}{
-		Version:        s.version,
+		Version:        s.buildInfo.Version,
 		Starting:       starting,
 		DiffCount:      len(diffs),
 		SelectedJobs:   selectedJobs,

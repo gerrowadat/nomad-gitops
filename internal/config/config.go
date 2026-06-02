@@ -28,10 +28,7 @@ type Config struct {
 	ListenAddr    string
 	WebhookSecret string
 	WebhookPath   string
-
-	// gRPC
-	GRPCListenAddr string
-	GRPCAPIKey     string
+	APIKey        string // PSK for /api/ endpoints; empty disables the API
 
 	// Diff
 	DiffInterval    time.Duration
@@ -76,9 +73,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.StringVar(&c.ListenAddr, "listen-addr", envOrDefault("LISTEN_ADDR", ":8080"), "HTTP listen address")
 	fs.StringVar(&c.WebhookSecret, "webhook-secret", envOrDefault("WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret")
 	fs.StringVar(&c.WebhookPath, "webhook-path", envOrDefault("WEBHOOK_PATH", "/webhook"), "HTTP path for webhook endpoint")
-
-	fs.StringVar(&c.GRPCListenAddr, "grpc-listen-addr", envOrDefault("GRPC_LISTEN_ADDR", ""), "gRPC listen address (e.g. :9090). Empty (the default) disables the gRPC server. Requires --grpc-api-key when set.")
-	fs.StringVar(&c.GRPCAPIKey, "grpc-api-key", envOrDefault("GRPC_API_KEY", ""), "Pre-shared API key for gRPC authentication (required when --grpc-listen-addr is set)")
+	fs.StringVar(&c.APIKey, "api-key", envOrDefault("API_KEY", ""), "Pre-shared key for /api/ endpoints (Bearer token). Empty disables the JSON API.")
 
 	fs.DurationVar(&c.DiffInterval, "diff-interval", envDurationOrDefault("DIFF_INTERVAL", time.Minute), "How often to run a diff check regardless of git changes")
 	fs.BoolVar(&c.IncludeDeadJobs, "include-dead-jobs", envBoolOrDefault("INCLUDE_DEAD_JOBS", false), "Treat dead Nomad jobs like running ones (by default dead jobs are treated as missing)")

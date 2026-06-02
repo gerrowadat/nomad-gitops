@@ -3,7 +3,6 @@
 package regression
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-
-	"github.com/gerrowadat/nomad-botherer/internal/grpcapi"
 	"github.com/gerrowadat/nomad-botherer/internal/server"
 )
 
@@ -169,192 +163,176 @@ func TestE2E_WebhookTriggersRefresh(t *testing.T) {
 	t.Errorf("webhook did not trigger drift detection within 30s; last diff_count=%d", lastCount)
 }
 
-// TestE2E_GRPCDisabledByDefault verifies that when --grpc-listen-addr is not
-// set (the default), no gRPC server is started. An RPC call to any unbound
-// port should fail; this confirms the server is absent, not just unreachable.
-func TestE2E_GRPCDisabledByDefault(t *testing.T) {
+// TestE2E_APIDisabledByDefault verifies that /api/v1/ endpoints return 404
+// when --api-key is not set (default).
+func TestE2E_APIDisabledByDefault(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)
 	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# no jobs"})
 
-	// Start without --grpc-listen-addr. gRPC is disabled by default.
-	startBotherer(t,
+	baseURL := startBotherer(t,
 		"--repo-url="+repoURL,
 		"--branch="+branch,
 		"--job-selector-glob=does-not-exist",
 	)
 
-	// Pick a port after the binary has started — nothing should be bound to it.
-	probeAddr := fmt.Sprintf("127.0.0.1:%d", freePort())
-
-	conn, err := grpc.NewClient(probeAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
+		t.Fatalf("GET /api/v1/diffs: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
-
-	client := grpcapi.NewNomadBothererClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer anything"))
-
-	_, rpcErr := client.GetDiffs(ctx, &grpcapi.GetDiffsRequest{})
-	if rpcErr == nil {
-		t.Error("gRPC call to unbound port succeeded — is something else listening?")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("want 404 when --api-key not set, got %d", resp.StatusCode)
 	}
-	// Any transport error (connection refused, deadline exceeded) confirms no server.
 }
 
-// TestE2E_GRPCGetDiffs starts the full binary with the gRPC server explicitly
-// enabled, registers a drifting job, and verifies GetDiffs returns it over gRPC.
-func TestE2E_GRPCGetDiffs(t *testing.T) {
+// TestE2E_APIGetDiffs starts the binary with --api-key, registers a drifting
+// job, and verifies GET /api/v1/diffs returns it.
+func TestE2E_APIGetDiffs(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)
-	apiKey := "grpc-test-key-" + randomSuffix()
+	apiKey := "api-test-key-" + randomSuffix()
 
-	jobID := uniqueJobID("e2e-grpc")
+	jobID := uniqueJobID("e2e-api")
 
 	// Git has modified HCL; Nomad has original → drift expected.
 	commitToGit(t, workDir, map[string]string{
 		jobID + ".hcl": testJobHCLModified(jobID),
 	})
-
 	registerJobHCL(t, testJobHCL(jobID))
 	waitForJobStatus(t, jobID, "running", 30*time.Second)
 
-	_, grpcAddr := startBothererWithGRPC(t, apiKey,
+	baseURL := startBothererWithAPI(t, apiKey,
 		"--repo-url="+repoURL,
 		"--branch="+branch,
 		"--job-selector-glob="+jobID,
 	)
 
-	conn, err := grpc.NewClient(grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
+	var result struct {
+		Diffs []struct {
+			JobID string `json:"job_id"`
+		} `json:"diffs"`
 	}
-	t.Cleanup(func() { conn.Close() })
+	apiGet(t, baseURL+"/api/v1/diffs", apiKey, &result)
 
-	client := grpcapi.NewNomadBothererClient(conn)
-	ctx := metadata.NewOutgoingContext(
-		context.Background(),
-		metadata.Pairs("authorization", "Bearer "+apiKey),
-	)
-
-	resp, err := client.GetDiffs(ctx, &grpcapi.GetDiffsRequest{})
-	if err != nil {
-		t.Fatalf("GetDiffs: %v", err)
-	}
-	if len(resp.Diffs) == 0 {
-		t.Errorf("expected ≥1 diff over gRPC, got 0")
+	if len(result.Diffs) == 0 {
+		t.Fatalf("expected ≥1 diff, got 0")
 	}
 	found := false
-	for _, d := range resp.Diffs {
-		if d.JobId == jobID {
+	for _, d := range result.Diffs {
+		if d.JobID == jobID {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("job %q not found in GetDiffs response: %v", jobID, resp.Diffs)
+		t.Errorf("job %q not found in /api/v1/diffs response", jobID)
 	}
 }
 
-// TestE2E_GRPCGetStatus verifies GetStatus returns a non-empty commit hash
-// and a plausible last-update timestamp.
-func TestE2E_GRPCGetStatus(t *testing.T) {
+// TestE2E_APIGetStatus verifies GET /api/v1/status returns a non-empty commit.
+func TestE2E_APIGetStatus(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)
 	apiKey := "status-key-" + randomSuffix()
 
-	commitToGit(t, workDir, map[string]string{
-		"placeholder.hcl": `# no jobs`,
-	})
+	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# no jobs"})
 
-	_, grpcAddr := startBothererWithGRPC(t, apiKey,
+	baseURL := startBothererWithAPI(t, apiKey,
 		"--repo-url="+repoURL,
 		"--branch="+branch,
 		"--job-selector-glob=does-not-exist",
 	)
 
-	conn, err := grpc.NewClient(grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
+	var result struct {
+		LastCommit  string `json:"last_commit"`
+		LastUpdated string `json:"last_updated"`
 	}
-	t.Cleanup(func() { conn.Close() })
+	apiGet(t, baseURL+"/api/v1/status", apiKey, &result)
 
-	client := grpcapi.NewNomadBothererClient(conn)
-	ctx := metadata.NewOutgoingContext(
-		context.Background(),
-		metadata.Pairs("authorization", "Bearer "+apiKey),
-	)
-
-	resp, err := client.GetStatus(ctx, &grpcapi.GetStatusRequest{})
-	if err != nil {
-		t.Fatalf("GetStatus: %v", err)
+	if len(result.LastCommit) < 7 {
+		t.Errorf("expected a non-empty commit hash, got %q", result.LastCommit)
 	}
-	if len(resp.LastCommit) < 7 {
-		t.Errorf("expected a non-empty commit hash, got %q", resp.LastCommit)
-	}
-	if resp.LastUpdateTime == "" {
-		t.Error("LastUpdateTime should be set after a successful fetch")
+	if result.LastUpdated == "" {
+		t.Error("last_updated should be set after a successful fetch")
 	}
 }
 
-// TestE2E_GRPCTriggerRefresh verifies that TriggerRefresh causes the git
-// watcher to pull (observable via a commit change reaching GetStatus).
-func TestE2E_GRPCTriggerRefresh(t *testing.T) {
+// TestE2E_APIRefresh verifies that POST /api/v1/refresh causes the git watcher
+// to pull (observable via a commit change on the status endpoint).
+func TestE2E_APIRefresh(t *testing.T) {
 	repoURL, workDir, branch := createGitRepo(t)
-	apiKey := "trigger-key-" + randomSuffix()
+	apiKey := "refresh-key-" + randomSuffix()
 
-	// Start with minimal content.
 	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# initial"})
 
-	_, grpcAddr := startBothererWithGRPC(t, apiKey,
+	baseURL := startBothererWithAPI(t, apiKey,
 		"--repo-url="+repoURL,
 		"--branch="+branch,
-		"--poll-interval=10m", // long interval so only TriggerRefresh drives fetches
+		"--poll-interval=10m",
 		"--diff-interval=10m",
 		"--job-selector-glob=does-not-exist",
 	)
 
-	conn, err := grpc.NewClient(grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
+	var s1 struct {
+		LastCommit string `json:"last_commit"`
 	}
-	t.Cleanup(func() { conn.Close() })
-
-	client := grpcapi.NewNomadBothererClient(conn)
-	ctx := metadata.NewOutgoingContext(
-		context.Background(),
-		metadata.Pairs("authorization", "Bearer "+apiKey),
-	)
-
-	// Record the initial commit.
-	s1, err := client.GetStatus(ctx, &grpcapi.GetStatusRequest{})
-	if err != nil {
-		t.Fatalf("GetStatus (initial): %v", err)
-	}
+	apiGet(t, baseURL+"/api/v1/status", apiKey, &s1)
 	initialCommit := s1.LastCommit
 
 	// Push a new commit to the repo.
 	commitToGit(t, workDir, map[string]string{"placeholder.hcl": "# updated"})
 
-	// Trigger a refresh.
-	if _, err := client.TriggerRefresh(ctx, &grpcapi.TriggerRefreshRequest{}); err != nil {
-		t.Fatalf("TriggerRefresh: %v", err)
+	// Trigger a refresh via the API.
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/v1/refresh: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/v1/refresh returned %d", resp.StatusCode)
 	}
 
-	// Wait for the commit to change.
+	// Wait for the commit to advance.
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		s2, err := client.GetStatus(ctx, &grpcapi.GetStatusRequest{})
-		if err == nil && s2.LastCommit != initialCommit {
-			return // commit updated after trigger — test passes
+		var s2 struct {
+			LastCommit string `json:"last_commit"`
+		}
+		if err := apiGetErr(baseURL+"/api/v1/status", apiKey, &s2); err == nil && s2.LastCommit != initialCommit {
+			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Error("TriggerRefresh did not cause the git commit to advance within 20s")
+	t.Error("POST /api/v1/refresh did not cause the git commit to advance within 20s")
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+// apiGet makes an authenticated GET request and decodes the JSON response into v.
+func apiGet(t *testing.T, url, apiKey string, v any) {
+	t.Helper()
+	if err := apiGetErr(url, apiKey, v); err != nil {
+		t.Fatalf("apiGet %s: %v", url, err)
+	}
+}
+
+func apiGetErr(url, apiKey string, v any) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
 }
 
 // TestE2E_MetricsEndpoint verifies that /metrics returns a valid Prometheus

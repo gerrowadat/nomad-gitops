@@ -22,7 +22,7 @@ func diffsResponse(t *testing.T, diffs []nomad.JobDiff, lastCheck time.Time) str
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
 	diffSrc := &mockDiffSource{diffs: diffs, lastCheck: lastCheck, lastCommit: "abc"}
 	gitSrc := &mockGitSource{lastUpdate: time.Now()}
-	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, "test", prometheus.NewRegistry())
+	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 	req := httptest.NewRequest(http.MethodGet, "/diffs", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)

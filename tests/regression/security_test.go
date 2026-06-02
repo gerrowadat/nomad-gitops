@@ -4,12 +4,10 @@ package regression
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,15 +16,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"github.com/gerrowadat/nomad-botherer/internal/config"
-	"github.com/gerrowadat/nomad-botherer/internal/grpcapi"
-	"github.com/gerrowadat/nomad-botherer/internal/grpcserver"
 	"github.com/gerrowadat/nomad-botherer/internal/nomad"
 	"github.com/gerrowadat/nomad-botherer/internal/server"
 )
@@ -215,24 +206,38 @@ func TestSecurity_Webhook_HTMLEscaping(t *testing.T) {
 	}
 }
 
-// ── gRPC authentication security ──────────────────────────────────────────────
+// ── JSON API authentication security ─────────────────────────────────────────
 
-// TestSecurity_GRPC_MissingKey verifies that a gRPC call with no authorization
-// metadata returns codes.Unauthenticated.
-func TestSecurity_GRPC_MissingKey(t *testing.T) {
-	client, _ := newGRPCTestServer(t, "correct-key-"+randomSuffix())
+func newAPITestServer(t *testing.T, apiKey string) *server.Server {
+	t.Helper()
+	cfg := &config.Config{
+		WebhookPath:       "/webhook",
+		Branch:            "main",
+		ManagedMetaPrefix: "gitops",
+		APIKey:            apiKey,
+	}
+	return server.NewWithRegistry(cfg, &mockDiffSource{ready: true}, &mockGitSource{ready: true},
+		server.BuildInfo{Version: "regression-test"}, prometheus.NewRegistry())
+}
 
-	_, err := client.GetVersion(context.Background(), &grpcapi.GetVersionRequest{})
-	if code := status.Code(err); code != codes.Unauthenticated {
-		t.Errorf("no key: want Unauthenticated, got %v", code)
+// TestSecurity_API_MissingKey verifies that a request with no Authorization
+// header returns 401.
+func TestSecurity_API_MissingKey(t *testing.T) {
+	srv := newAPITestServer(t, "correct-key-"+randomSuffix())
+
+	req := httptest.NewRequest("GET", "/api/v1/version", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("no key: want 401, got %d", w.Code)
 	}
 }
 
-// TestSecurity_GRPC_WrongKey verifies that incorrect API keys all produce
-// Unauthenticated, regardless of how close the key is to the correct one.
-func TestSecurity_GRPC_WrongKey(t *testing.T) {
+// TestSecurity_API_WrongKey verifies that incorrect API keys all produce 401.
+func TestSecurity_API_WrongKey(t *testing.T) {
 	correctKey := "correct-key-" + randomSuffix()
-	client, _ := newGRPCTestServer(t, correctKey)
+	srv := newAPITestServer(t, correctKey)
 
 	wrongKeys := []string{
 		"",
@@ -241,60 +246,56 @@ func TestSecurity_GRPC_WrongKey(t *testing.T) {
 		correctKey + "x",
 		strings.ToUpper(correctKey),
 	}
-
 	for _, k := range wrongKeys {
 		t.Run(fmt.Sprintf("key=%q", k), func(t *testing.T) {
-			ctx := metadata.NewOutgoingContext(
-				context.Background(),
-				metadata.Pairs("authorization", "Bearer "+k),
-			)
-			_, err := client.GetVersion(ctx, &grpcapi.GetVersionRequest{})
-			if code := status.Code(err); code != codes.Unauthenticated {
-				t.Errorf("wrong key %q: want Unauthenticated, got %v", k, code)
+			req := httptest.NewRequest("GET", "/api/v1/version", nil)
+			if k != "" {
+				req.Header.Set("Authorization", "Bearer "+k)
+			}
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("wrong key %q: want 401, got %d", k, w.Code)
 			}
 		})
 	}
 }
 
-// TestSecurity_GRPC_ValidKey verifies that the correct API key grants access.
-func TestSecurity_GRPC_ValidKey(t *testing.T) {
+// TestSecurity_API_ValidKey verifies that the correct API key grants access.
+func TestSecurity_API_ValidKey(t *testing.T) {
 	key := "valid-key-" + randomSuffix()
-	client, _ := newGRPCTestServer(t, key)
+	srv := newAPITestServer(t, key)
 
-	ctx := metadata.NewOutgoingContext(
-		context.Background(),
-		metadata.Pairs("authorization", "Bearer "+key),
-	)
-	resp, err := client.GetVersion(ctx, &grpcapi.GetVersionRequest{})
-	if err != nil {
-		t.Fatalf("valid key: unexpected error: %v", err)
+	req := httptest.NewRequest("GET", "/api/v1/version", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("valid key: want 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if resp.Version != "regression-test" {
-		t.Errorf("unexpected version %q", resp.Version)
+	if !strings.Contains(w.Body.String(), "regression-test") {
+		t.Errorf("unexpected version response: %s", w.Body.String())
 	}
 }
 
-// TestSecurity_GRPC_AuthUnderLoad fires 100 concurrent wrong-key requests and
-// verifies they all return Unauthenticated without panics. Timing-based
-// constant-time comparison is not measurable over a loopback gRPC connection
-// (round-trip latency swamps the signal); use static analysis or code review
-// to confirm crypto/subtle.ConstantTimeCompare is used in grpcserver.
-func TestSecurity_GRPC_AuthUnderLoad(t *testing.T) {
+// TestSecurity_API_AuthUnderLoad fires 100 concurrent wrong-key requests and
+// verifies they all return 401 without races or panics.
+func TestSecurity_API_AuthUnderLoad(t *testing.T) {
 	correctKey := strings.Repeat("a", 32)
-	client, _ := newGRPCTestServer(t, correctKey)
+	srv := newAPITestServer(t, correctKey)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ctx := metadata.NewOutgoingContext(
-				context.Background(),
-				metadata.Pairs("authorization", fmt.Sprintf("Bearer wrong-%d", i)),
-			)
-			_, err := client.GetVersion(ctx, &grpcapi.GetVersionRequest{})
-			if code := status.Code(err); code != codes.Unauthenticated {
-				t.Errorf("goroutine %d: want Unauthenticated, got %v", i, code)
+			req := httptest.NewRequest("GET", "/api/v1/version", nil)
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer wrong-%d", i))
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("goroutine %d: want 401, got %d", i, w.Code)
 			}
 		}(i)
 	}
@@ -349,39 +350,7 @@ func newWebhookTestServer(t *testing.T, secret string) *server.Server {
 		ManagedMetaPrefix: "gitops",
 	}
 	return server.NewWithRegistry(cfg, &mockDiffSource{ready: true}, &mockGitSource{ready: true},
-		"test", prometheus.NewRegistry())
-}
-
-// newGRPCTestServer starts an in-process gRPC server and returns a client.
-func newGRPCTestServer(t *testing.T, apiKey string) (grpcapi.NomadBothererClient, *grpcserver.Server) {
-	t.Helper()
-
-	srv := grpcserver.NewWithRegistry(apiKey,
-		&mockDiffSource{ready: true},
-		&mockGitSource{ready: true},
-		grpcserver.BuildInfo{Version: "regression-test"},
-		prometheus.NewRegistry(),
-	)
-
-	grpcSrv := srv.GRPCServer()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go grpcSrv.Serve(lis)
-	t.Cleanup(func() {
-		grpcSrv.GracefulStop()
-		lis.Close()
-	})
-
-	conn, err := grpc.NewClient(lis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-
-	return grpcapi.NewNomadBothererClient(conn), srv
+		server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 }
 
 // webhookSig computes "sha256=<hex>" for body signed with secret.
