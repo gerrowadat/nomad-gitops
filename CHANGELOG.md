@@ -1,0 +1,55 @@
+# Changelog
+
+## v0.1.2 — 2026-06-02
+
+### Security fixes
+
+- Fixed three security bugs introduced in earlier releases:
+  - SSH host key verification was disabled by default, allowing MITM attacks on git clones over SSH. Host key checking is now on by default; the `--git-ssh-known-hosts` flag lets you point at a custom known_hosts file.
+  - The HTTP server had no read/write timeouts, leaving it open to slowloris-style connection exhaustion. Timeouts are now applied.
+  - Webhook signatures were not verified when no `--webhook-secret` was configured, accepting any POST as a valid push event. Webhooks are now rejected if no secret is configured.
+
+### New features
+
+- **Job selection** (`--job-selector-glob`, `--managed-meta-prefix`): Two independent mechanisms for scoping which jobs nomad-botherer watches. `--job-selector-glob` selects by name pattern (e.g. `myteam-*`); `--managed-meta-prefix` selects jobs that carry a meta key with the given prefix (default `gitops`, meaning `gitops.managed = "true"` opts a job in). Jobs matching either selector are watched; jobs matching neither are ignored.
+- **gRPC server disabled by default**: The gRPC server no longer binds to `:9090` on startup. Set `--grpc-listen-addr` (or `GRPC_LISTEN_ADDR`) to enable it. This avoids unexpected port conflicts and makes the `--grpc-api-key` requirement easier to enforce.
+
+### Correctness
+
+- Replaced empirical Nomad API workarounds with behaviour documented in the Nomad source and HTTP API:
+  - Job list calls now use `?meta=true` (documented query parameter) to retrieve job meta in the list response, removing a redundant per-job `Info()` call.
+  - Jobs stopped via Nomad's deregister-without-purge set `Stop=true` on the job record. The differ now copies this field onto the parsed HCL job before planning, preventing a spurious `Stop` field diff.
+  - `hasContentDiff` now recognises `Type="None"` (defined as `DiffTypeNone` in `nomad/structs/diff.go`) as a no-op task group result, avoiding false positives on plan responses for unchanged jobs.
+
+### Testing
+
+- Added a full regression test suite (`tests/regression/`) covering drift detection, end-to-end HTTP and gRPC flows, Prometheus metrics, webhook handling, security behaviours, and job selection. The suite runs against a real Nomad instance and is tagged `//go:build regression` so it does not run in CI by default. See the Testing section of the README for how to run it.
+
+### Documentation
+
+- Added a Getting Started section to the README with a minimal working example.
+- Added `examples/nomad-botherer.hcl`: a commented Nomad job definition for running nomad-botherer on a Nomad cluster, covering all configuration options.
+- Added design intent documentation: `docs/proposals/` covers the planned apply side and change checkpointing; `docs/prior-art.md` surveys existing tooling and the problems nomad-botherer is designed to avoid.
+
+### Dependencies and tooling
+
+- Updated Go to 1.25.6.
+- Switched protobuf code generation from `protoc` + `arduino/setup-protoc` to `buf`. Added a CI check for proto drift.
+- Bumped `github.com/go-git/go-git/v5` to 5.19.1.
+- Bumped `google.golang.org/grpc` to 1.81.1.
+- Updated GitHub Actions: `actions/checkout` v6, `actions/setup-go` v6, `docker/build-push-action` v7, `docker/login-action` v4, `docker/metadata-action` v6, `docker/setup-buildx-action` v4, `docker/setup-qemu-action` v4.
+
+---
+
+## v0.1.1 — 2026-05-11
+
+- Added gRPC API (`GetDiffs`, `GetStatus`, `TriggerRefresh`, `GetVersion`) with API key authentication.
+- Added `nbctl` CLI for interacting with the gRPC API.
+- Added Prometheus metrics endpoint (`/metrics`).
+- Added webhook endpoint for GitHub push events (`/webhook`).
+- Added staleness checks (`--max-git-staleness`, `--max-nomad-staleness`).
+- Documentation and Docker publishing improvements.
+
+## v0.1.0 — 2026-05-10
+
+- Initial release. HTTP server with `/healthz`, `/diffs`, and `/` endpoints. Git polling and Nomad diff detection.
