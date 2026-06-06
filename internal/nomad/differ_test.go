@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/prometheus/client_golang/prometheus"
@@ -528,7 +529,8 @@ func gatherJobDriftSince(t *testing.T, reg prometheus.Gatherer, job, diffType st
 
 // TestDiffer_SkipOnUnchangedIndexAndCommit verifies that Check skips all
 // per-job API calls when both the Nomad Raft index and the git commit are
-// identical to the previous check.
+// identical to the previous check, and still updates the last-check timestamp
+// so the NomadBothererCheckStale alert does not fire on quiet but healthy cycles.
 func TestDiffer_SkipOnUnchangedIndexAndCommit(t *testing.T) {
 	mock := defaultMock()
 	infoCalls := 0
@@ -539,7 +541,8 @@ func TestDiffer_SkipOnUnchangedIndexAndCommit(t *testing.T) {
 	mock.listFn = func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
 		return nil, &nomadapi.QueryMeta{LastIndex: 42}, nil
 	}
-	d := newTestDiffer(mock)
+	reg := prometheus.NewRegistry()
+	d := newTestDifferWithRegistry(mock, reg)
 
 	if err := d.Check(map[string]string{"a.hcl": `job "test-job" {}`}, "abc123"); err != nil {
 		t.Fatal(err)
@@ -548,6 +551,18 @@ func TestDiffer_SkipOnUnchangedIndexAndCommit(t *testing.T) {
 		t.Fatalf("expected 1 Info call after first check, got %d", infoCalls)
 	}
 
+	// Capture the timestamp written by the first (full) check.
+	tsAfterFirst := gatherLastCheckTimestamp(t, reg)
+	if tsAfterFirst == 0 {
+		t.Fatal("expected last_check_timestamp_seconds to be set after first check")
+	}
+
+	// Wait until the wall clock has advanced past tsAfterFirst so that a fresh
+	// time.Now().Unix() will produce a strictly larger value. This is at most
+	// one second and avoids flakiness from both checks landing in the same second.
+	deadline := time.Unix(int64(tsAfterFirst)+1, 0)
+	time.Sleep(time.Until(deadline))
+
 	// Second call: same commit, same Nomad index — must skip per-job work.
 	if err := d.Check(map[string]string{"a.hcl": `job "test-job" {}`}, "abc123"); err != nil {
 		t.Fatal(err)
@@ -555,6 +570,29 @@ func TestDiffer_SkipOnUnchangedIndexAndCommit(t *testing.T) {
 	if infoCalls != 1 {
 		t.Errorf("expected Info not called on skip, got %d total calls", infoCalls)
 	}
+
+	// The skip path must have advanced the timestamp, proving it updated the
+	// metric rather than relying on the earlier commitResults() call.
+	tsAfterSkip := gatherLastCheckTimestamp(t, reg)
+	if tsAfterSkip <= tsAfterFirst {
+		t.Errorf("last_check_timestamp_seconds not updated by skip: before=%v after=%v", tsAfterFirst, tsAfterSkip)
+	}
+}
+
+func gatherLastCheckTimestamp(t *testing.T, reg prometheus.Gatherer) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "nomad_botherer_last_check_timestamp_seconds" {
+			for _, m := range mf.GetMetric() {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+	return 0
 }
 
 // TestDiffer_NoSkipOnChangedCommit verifies that a new git commit forces a

@@ -488,6 +488,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 	if listMeta != nil && listMeta.LastIndex == prevIndex && commit == prevCommit {
 		slog.Debug("Skipping diff: Nomad index and commit unchanged", "index", listMeta.LastIndex, "commit", commit)
 		d.diffChecksSkipped.Inc()
+		d.lastCheck.Set(float64(time.Now().Unix()))
 		return nil
 	}
 
