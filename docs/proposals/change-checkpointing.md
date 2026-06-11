@@ -1,7 +1,8 @@
 # Proposal: checkpointing ongoing job updates
 
 **Status**: draft  
-**Date**: 2026-05-13
+**Date**: 2026-05-13  
+**Updated**: 2026-06-11
 
 ## Background
 
@@ -38,6 +39,23 @@ standalone database.
 - Not require an external database (PostgreSQL, Redis, etcd, etc.).
 - Ideally, not require additional infrastructure beyond what the service already
   talks to (Nomad, Git).
+- **Be an optimisation, never a correctness dependency.** All durable truth
+  lives in Git (desired state) and Nomad (actual state, `JobModifyIndex`);
+  if the checkpoint store is empty, stale, or unreachable, nomad-botherer
+  must fall back to recomputing intent from one diff cycle and remain
+  correct — degraded only in visibility and audit, never in behaviour. In
+  particular, no apply decision may *require* checkpoint data: idempotency
+  comes from CAS and re-planning, and deregister safety comes from
+  rechecking live state immediately before the call, not from remembered
+  intent. See "Restart safety and recovery" in
+  [gitops-job-updates.md](gitops-job-updates.md).
+
+One known exception sits outside this rule by nature: Diun image-update
+notifications are delivered once and are not recomputable from Git or Nomad,
+so losing them loses real information (until the next upstream event). They
+use the same Nomad Variables store, and their loss still degrades only
+visibility, not GitOps correctness. See
+[diun-integration.md](diun-integration.md).
 
 ---
 
@@ -54,6 +72,11 @@ nomad-botherer writes one Variable per in-flight rollout at a well-known path:
 ```
 nomad/jobs/gitops/checkpoints/<git_commit>
 ```
+
+(The [Diun integration proposal](diun-integration.md) stores received
+image-update notifications under a sibling prefix,
+`nomad/jobs/gitops/image-updates/`, so a single ACL policy on
+`nomad/jobs/gitops/*` covers all nomad-botherer operational state.)
 
 The value is a JSON-serialised snapshot of the `JobUpdate`
 slice for that commit. The Variable is created when the first update for a

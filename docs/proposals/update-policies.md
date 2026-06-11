@@ -1,0 +1,216 @@
+# Proposal: per-job update policies
+
+**Status**: draft  
+**Date**: 2026-06-11
+
+## Background
+
+The [GitOps job updates proposal](gitops-job-updates.md) describes how
+nomad-botherer will apply detected drift to the cluster. That proposal treats
+apply as all-or-nothing: a job is either managed (`gitops_managed = "true"`)
+and fully reconciled, or not managed and never touched.
+
+In practice, jobs want different degrees of automation. A stateless web
+frontend can absorb any change Git throws at it. A database job might want
+image version bumps applied automatically but anything touching volumes,
+resources, or constraints held for a human. A particularly delicate job might
+want drift *reported* but never applied.
+
+This proposal adds a per-job policy key to the existing meta opt-in mechanism,
+so that the degree of automation is declared in the job's HCL alongside the
+opt-in flag — version-controlled, reviewable, and human-written (no
+meta-drift; see [change-checkpointing.md](change-checkpointing.md)).
+
+---
+
+## The policy key
+
+```hcl
+job "api-server" {
+  meta {
+    gitops_managed       = "true"
+    gitops_update_policy = "image-only"
+  }
+}
+```
+
+`gitops_update_policy` takes one of three values:
+
+| Value | Meaning |
+|---|---|
+| `full` | Any detected drift between the HCL and the cluster is applied (plan → CAS register, per the apply flow). |
+| `image-only` | Drift is applied only when the *entire* plan diff is confined to Docker image references. Any other change — even one bundled in the same commit as an image bump — leaves the whole update unapplied and surfaced as a diff. |
+| `none` | Drift is detected and surfaced (diffs API, metrics) but never applied. Detection-only, per job. |
+
+A job with `gitops_managed = "true"` and no policy key gets the default
+policy, which is a config flag:
+
+| Flag | Env var | Default |
+|---|---|---|
+| `--default-update-policy` | `DEFAULT_UPDATE_POLICY` | `full` |
+
+The default is `full` because `gitops_managed = "true"` already expresses
+the intent to be managed; the policy key *restricts* that. Deployments that
+want to enrol jobs gradually can set `--default-update-policy=none` and
+promote jobs one at a time by adding explicit policy keys.
+
+The conservative gate lives at the deployment level, not the job level: a
+global apply mode flag (see the job updates proposal) defaults to off, so no
+policy value causes a write until the operator turns applying on.
+
+---
+
+## Semantics by drift type
+
+| Drift type | `full` | `image-only` | `none` |
+|---|---|---|---|
+| `modified` (image fields only) | apply | apply | surface only |
+| `modified` (anything else) | apply | surface only | surface only |
+| `missing_from_nomad` | register | surface only | surface only |
+| `missing_from_hcl` | see below | never | never |
+
+Notes:
+
+- **Initial registration is `full`-only.** Registering a job for the first
+  time is by definition not an image-only change; an `image-only` job that is
+  missing from the cluster is surfaced as `missing_from_nomad` and left for a
+  human to register. This keeps `image-only` true to its name: the only write
+  it ever performs is a re-register where the plan shows image changes alone.
+- **Deregistration is not enabled by any policy value.** Per the existing
+  design intent, deregister requires the global enable flag *and*
+  `gitops_managed = "true"` on the live job. When that lands, it should
+  additionally require policy `full` (effective, after defaulting) — but the
+  policy key never turns deregistration on by itself.
+- For `missing_from_nomad` and `missing_from_hcl`, there is no live/parsed
+  job pair to compare, so "image-only" has no meaningful diff to classify;
+  hence the table above.
+
+The policy is read from the *HCL side* (the parsed job in Git) when both
+sides exist, because Git is the source of truth for intent. For
+`missing_from_hcl` there is no HCL; the live job's meta is all we have, which
+is consistent with the deregister guard already reading the live meta.
+
+---
+
+## Classifying a diff as image-only
+
+`Jobs.Plan()` returns a `JobPlanResponse` whose `Diff` field is a structured
+tree: job-level `Fields` and `Objects`, then `TaskGroups[]`, then `Tasks[]`,
+each with their own `Fields` and `Objects`. The Docker image lives at
+task level as the `image` field inside the `Config` object.
+
+A plan diff is image-only when every leaf marked changed (`Type` of `Added`,
+`Deleted`, or `Edited`) is:
+
+- a `Fields` entry named `image` inside a task's `Config` object, or
+- an annotation-only artefact of that change (Nomad marks the enclosing
+  task/group/job as `Edited` when any child changes; those container nodes
+  are not leaves).
+
+Everything else — env vars, resources, count, constraints, templates, meta
+itself — disqualifies the diff.
+
+Two existing principles interact with this classification and apply to *all*
+policies, not just `image-only`:
+
+- **Autoscaler ownership of `Count`.** Per the design intent (and nomad-ops
+  prior art), when a job has a scaling policy, changes to `Count`/`Scaling`
+  fields are excluded from drift consideration before policy is evaluated.
+  A diff that is "image change + autoscaler-owned count change" is still
+  image-only.
+- **Plan-before-apply.** The classification is done on the same plan response
+  that gates the register call, so there is no second round trip and no
+  window where the classified diff differs from the applied one. The
+  `JobModifyIndex` captured for CAS covers the classification too: if the
+  cluster moves after the plan, the register is rejected regardless of
+  policy.
+
+The classifier should be a pure function over `*api.JobDiff`
+(`classifyDiff(diff) DiffClass`) with table-driven tests covering: image-only,
+image+env, image+count-with-scaling-policy, image+count-without-scaling-policy,
+added task, removed group. It is the natural extension point if more
+categories are wanted later (see open questions).
+
+---
+
+## Meta key syntax
+
+HCL2 block attribute names cannot contain dots, so the block form works for
+nomad-botherer's own keys:
+
+```hcl
+meta {
+  gitops_managed       = "true"
+  gitops_update_policy = "image-only"
+}
+```
+
+The [Diun integration proposal](diun-integration.md) reuses Diun's dotted
+`diun.*` meta vocabulary, and dotted keys require the object-expression form.
+HCL does not allow mixing the two forms in one block, so a job using both
+families of keys writes:
+
+```hcl
+meta = {
+  "gitops_managed"       = "true"
+  "gitops_update_policy" = "image-only"
+  "diun.enable"          = "true"
+  "diun.include_tags"    = "^1\\."
+}
+```
+
+This is cosmetic but worth documenting in the README when implemented,
+because the error HCL produces when you mix forms is unhelpful.
+
+---
+
+## Relationship to image update tracking
+
+This proposal governs the *downstream* direction: Git has changed, how much
+of that change may be applied to Nomad automatically.
+
+The [Diun integration proposal](diun-integration.md) governs the *upstream*
+direction: a newer image exists in a registry, but Git still pins the old
+tag. That is not drift — Git and Nomad agree — so no policy value causes it
+to be applied. It is surfaced as an available update, and a human (or
+external automation) updates Git, at which point the change flows back
+through this proposal's policy gate like any other commit.
+
+The two are deliberately orthogonal: `gitops_update_policy` never causes a
+write that is not in Git, and Diun tracking never causes a write at all.
+
+---
+
+## Observability
+
+Per the metrics convention:
+
+- `nomad_botherer_updates_blocked_by_policy_total{job_id, policy}` — counter,
+  incremented when a detected diff would have produced a `JobUpdate` but the
+  effective policy filtered it out. This is the signal an operator watches to
+  find jobs accumulating unapplied drift.
+- The existing per-job drift gauges already cover the "surfaced but not
+  applied" state; blocked updates remain visible as diffs.
+
+Policy filtering happens at update *creation* time, not at apply time: a
+policy-blocked diff never becomes a `JobUpdate`, so no new `JobUpdateStatus`
+value is needed and the updates API only ever shows actionable intent.
+
+---
+
+## Open questions
+
+- **More categories.** Is `image-only` the only restricted policy worth
+  having, or do `env-only` / `resources-only` earn their keep? Proposal:
+  ship `full`/`image-only`/`none` and let the diff classifier's design make
+  additions cheap, rather than speculating now.
+- **Per-task or per-group policy.** A job with a delicate stateful task and a
+  disposable sidecar might want different policies per task. Nomad meta
+  exists at job, group, and task level, so the mechanism allows it — but
+  Nomad applies job registrations atomically, so a partial apply is not
+  actually possible. Job-level only, unless a real need appears.
+- **Policy on the live job disagreeing with HCL.** If the live job says
+  `full` and the HCL says `none`, the HCL wins (Git is intent). But the
+  *transition* commit that changes the policy is itself drift that the old
+  policy may block applying. Probably fine — a human registered the policy
+  change manually or the default policy applies — but worth a test case.

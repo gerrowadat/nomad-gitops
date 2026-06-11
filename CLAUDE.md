@@ -46,8 +46,9 @@ nomad-botherer applies the Git state to Nomad. The design proposals in
 existing tooling (nomad-gitops-operator, nomad-ops, Levant, Waypoint) and
 explains what problems they have that nomad-botherer is trying to avoid.
 
-Before implementing the apply side, read both proposal docs. The decisions in
-them were made deliberately and the reasoning matters.
+Before implementing the apply side, read the proposal docs (job updates,
+checkpointing, update policies, Diun integration). The decisions in them were
+made deliberately and the reasoning matters.
 
 ### Core design principles for the apply side
 

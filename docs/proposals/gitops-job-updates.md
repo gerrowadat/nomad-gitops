@@ -1,7 +1,13 @@
 # Proposal: GitOps job updates
 
 **Status**: draft  
-**Date**: 2026-05-13
+**Date**: 2026-05-13  
+**Updated**: 2026-06-11
+
+Related proposals: [change-checkpointing.md](change-checkpointing.md)
+(persisting queue state), [update-policies.md](update-policies.md) (per-job
+control over what gets applied), [diun-integration.md](diun-integration.md)
+(tracking upstream image updates).
 
 ## Background
 
@@ -32,6 +38,17 @@ A GitOps update is triggered when `Check()` detects any of the following:
 The update carries enough context to execute the action and to record what
 happened. It is distinct from a `JobDiff`: a diff is an observation, an update
 is an intended transition.
+
+Not every diff becomes an update. Two filters sit between detection and
+enqueueing:
+
+- **Opt-in scope**: only jobs with `gitops_managed = "true"` are considered
+  at all (see [change-checkpointing.md](change-checkpointing.md),
+  Alternative 3).
+- **Per-job update policy**: the job's `gitops_update_policy` meta key
+  (`full` / `image-only` / `none`) decides whether this *kind* of change may
+  be applied automatically. A policy-blocked diff stays an observation and
+  never becomes a `JobUpdate`. See [update-policies.md](update-policies.md).
 
 ---
 
@@ -137,6 +154,99 @@ Each job in Nomad has a `Version` field that increments on every registered
 change. We do not use this for the apply decision, but it is worth recording in
 the update so that a future rollback operator (not in scope here) can target a
 specific version with `Jobs.Revert()`.
+
+---
+
+## Restart safety and recovery
+
+nomad-botherer must be able to die at any instant — mid-apply, mid-rollout,
+between detection and apply — and recover without an operator noticing
+anything beyond a metrics gap. The design rule that makes this possible:
+
+**All durable truth lives in Git (desired state) and Nomad (actual state plus
+`JobModifyIndex`). Anything nomad-botherer holds is a cache, derivable from
+those two by running one diff cycle.**
+
+Recovery is therefore not a special path. Startup is: clone (in-memory),
+`Check()`, enqueue whatever is still drifted. There is no replay log to
+process, no journal to fsck, and no state whose loss changes behaviour —
+only state whose loss costs one cycle of latency.
+
+What makes interruption at each point safe:
+
+- **Crash after detect, before apply**: the pending update is lost; the next
+  cycle re-detects the same drift and recreates it. The `UpdateID`
+  (`<job_id>/<git_commit_short>`) is deliberately derived from stable inputs
+  so the recreated update is recognisably the same intent.
+- **Crash after `Jobs.Register()` was sent, before recording the outcome**:
+  the next cycle's plan shows no diff (the register landed) and produces no
+  update — a natural no-op. If the register did not land, the drift is still
+  there and is retried. CAS via `EnforceIndex` ensures a retry cannot
+  stomp anything that changed in between.
+- **Crash mid-`DEREGISTER`**: deregister is the one non-idempotent risk — a
+  blind retry could delete a job that was legitimately re-registered in the
+  gap. The guard is *recheck, don't remember*: immediately before calling
+  deregister, re-confirm against live state (the job exists, its live meta
+  still has `gitops_managed = "true"`, and no HCL file for it exists at
+  current HEAD). A stored intent is never sufficient on its own, so a stale
+  replayed intent is harmless by construction.
+
+The [checkpointing proposal](change-checkpointing.md) layers durability on
+top of this for visibility and audit — an operator mid-rollout can see what
+was applied — but it is an optimisation, never a correctness dependency. If
+the checkpoint store is empty, wrong, or unreachable, the system falls back
+to recomputation and remains correct.
+
+---
+
+## Where the apply runs
+
+Orthogonal to the queue architecture below is the question of *what process*
+executes an apply. Two options were considered.
+
+### In-process (recommended)
+
+The reconciler goroutine calls `Jobs.Plan()` and `Jobs.Register()` directly.
+An apply is a handful of API calls completing in seconds; the restart
+analysis above already makes interruption safe, so process death mid-apply
+costs nothing but a cycle.
+
+### Dispatched Nomad job as apply executor
+
+The alternative: nomad-botherer registers a parameterized batch job
+(`nomad-botherer-apply`) once, and performs each apply by dispatching it
+with meta parameters — job ID, git commit, HCL path, captured
+`JobModifyIndex`. The dispatched task fetches the HCL at that exact commit,
+runs the plan + CAS register itself, and exits. Nomad supervises the
+executor, so the apply survives nomad-botherer's death entirely, and
+in-flight applies are discoverable on startup by listing the dispatch
+children — cluster state doubling as the in-flight-work record, which is an
+attractive extension of the "state lives in Nomad" idea. Each apply also
+gets a Nomad-native audit record and resource isolation for free.
+
+The costs are substantial, though:
+
+- The executor task needs its own Git credentials and a Nomad token with
+  submit-job rights — a secrets-distribution problem nomad-botherer
+  otherwise doesn't have.
+- Dispatch payloads are capped at 16 KiB, so the payload must be a pointer
+  (commit + path), which forces the executor to clone the repo per apply —
+  exactly the re-clone-per-cycle cost this project criticises in prior art,
+  now per-update.
+- Failure handling spans two processes: the executor can fail in ways
+  nomad-botherer must then discover by polling the dispatch job's status,
+  reintroducing the visibility machinery the in-process queue gives us
+  directly.
+- Latency per apply goes from seconds to scheduler-roundtrip-plus-image-pull.
+- The executor job itself must be registered and upgraded by something —
+  a bootstrap wrinkle for the tool that exists to register jobs.
+
+**Verdict**: not justified while applies are short-lived API calls that are
+already safe to interrupt. Revisit if the apply path grows long-running
+phases — e.g. watching a deployment's health to decide on auto-revert —
+where surviving the operator's restart mid-watch has real value. The
+`Applier` interface boundary should be kept clean enough that a dispatching
+implementation can be slotted in without restructuring.
 
 ---
 
@@ -299,12 +409,19 @@ without requiring log scraping.
 
 ## Open questions
 
-- **Deregister behaviour**: should `missing_from_hcl` trigger a deregister
-  unconditionally, or should it require an explicit `gitops: deregister` flag in
-  the job meta to prevent accidental deletions when a file is renamed?
+- **Deregister behaviour** (resolved direction): deregister requires an
+  explicit enable flag, `gitops_managed = "true"` on the *live* job, an
+  effective update policy of `full`, and a recheck of live state immediately
+  before the call (see "Restart safety and recovery"). Purge is never the
+  default. What remains open is whether a grace period (drift must persist
+  for N cycles before deregister fires) is also wanted, to absorb file
+  renames that briefly look like deletions.
 - **Apply ordering**: if multiple jobs change in one commit, should they be
   applied in dependency order? Nomad does not expose a dependency graph, so this
   would require an explicit ordering field in HCL or job meta.
 - **Rollback**: if a registered job's health checks fail after apply, should
   nomad-botherer trigger `Jobs.Revert()`? This needs a separate health-check
-  polling loop and is out of scope for an initial implementation.
+  polling loop and is out of scope for an initial implementation. If it is
+  ever built, it is the strongest argument for the dispatched-executor model
+  in "Where the apply runs", since the watch outlives any single
+  nomad-botherer process.
