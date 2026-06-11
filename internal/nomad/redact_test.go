@@ -152,3 +152,24 @@ func TestRedactJobDiff_NilAndEmpty(t *testing.T) {
 		t.Errorf("empty-valued env field should not be annotated: %v", d.Fields[0].Annotations)
 	}
 }
+
+func TestRedactJobDiff_NilEntriesSkipped(t *testing.T) {
+	d := &nomadapi.JobDiff{
+		Type:   "Edited",
+		Fields: []*nomadapi.FieldDiff{nil, {Type: "Edited", Name: "Env[X]", Old: "a", New: "b"}},
+		Objects: []*nomadapi.ObjectDiff{
+			nil,
+			{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{nil}},
+		},
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			nil,
+			{Type: "Edited", Name: "web", Tasks: []*nomadapi.TaskDiff{nil}},
+		},
+	}
+	if n := nomad.RedactJobDiff(d); n != 1 {
+		t.Errorf("nil entries should be skipped without panic; want 1 redaction, got %d", n)
+	}
+	if d.Fields[1].New != nomad.RedactedValue {
+		t.Errorf("non-nil env field should still be redacted: %q", d.Fields[1].New)
+	}
+}

@@ -563,3 +563,31 @@ func TestLoadFromArgs_RedactSecretsEnvOff(t *testing.T) {
 		t.Error("RedactSecrets: want false from env var, got true")
 	}
 }
+
+func TestLoad_UsesCommandLineAndArgs(t *testing.T) {
+	os.Unsetenv("GIT_REPO_URL")
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+	})
+	flag.CommandLine = flag.NewFlagSet("nomad-botherer", flag.ContinueOnError)
+	os.Args = []string{"nomad-botherer", "--repo-url", "https://example.com/load.git"}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RepoURL != "https://example.com/load.git" {
+		t.Errorf("unexpected RepoURL from Load: %q", cfg.RepoURL)
+	}
+}
+
+func TestLoadFromArgs_UnknownFlagRejected(t *testing.T) {
+	os.Unsetenv("GIT_REPO_URL")
+	_, err := LoadFromArgs(newFS(), []string{"--no-such-flag"})
+	if err == nil {
+		t.Error("unknown flag should produce a parse error")
+	}
+}

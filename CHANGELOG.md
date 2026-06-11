@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- **Test coverage raised from 78% to 88% of statements.** `internal/config`
+  and `internal/nomad` are at 100%, `internal/server` at 99%, and
+  `internal/gitwatch` went from 66% to 92% — Clone, pull, and Run are now
+  exercised against real on-disk git repositories instead of only mocks.
+  No production code changed.
+
 ### Fixed
 
 - **Regression suite runs alongside a real Nomad agent.** The Docker-managed
