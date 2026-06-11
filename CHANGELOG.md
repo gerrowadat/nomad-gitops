@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Regression suite runs alongside a real Nomad agent.** The Docker-managed
+  test Nomad uses host networking on Linux but only pinned the HTTP port,
+  leaving RPC (4647) and serf (4648) at their defaults — so the suite failed
+  to start on any host already running Nomad. All three ports are now pinned
+  to free ports, and the test agent binds to loopback only so it is not
+  exposed on the LAN.
+
 ## v0.4.0 — 2026-06-11
 
 ### Security

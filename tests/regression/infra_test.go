@@ -50,11 +50,14 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("docker pull %s: %w\n%s", image, err, pullStderr.String())
 	}
 
-	port := freePort()
-	addr = fmt.Sprintf("http://127.0.0.1:%d", port)
+	// Three distinct ports: HTTP, RPC, and serf. With host networking
+	// (Linux) all three must be pinned, or the agent's default RPC/serf
+	// ports (4647/4648) collide with any Nomad already running on the host.
+	ports := freePorts(3)
+	addr = fmt.Sprintf("http://127.0.0.1:%d", ports[0])
 	name := fmt.Sprintf("nomad-regression-%s", randomSuffix())
 
-	runArgs, cfgPath, err := buildDockerRunArgs(name, image, port)
+	runArgs, cfgPath, err := buildDockerRunArgs(name, image, ports[0], ports[1], ports[2])
 	if err != nil {
 		return "", nil, err
 	}
@@ -89,16 +92,20 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 // buildDockerRunArgs returns the argument slice for "docker run" to start a
 // Nomad dev agent. On Linux it uses host networking (avoiding Docker bridge
 // port-mapping issues in rootless and DinD environments) with a temporary
-// config file that pins the HTTP port. cfgPath is non-empty on Linux and must
-// be removed by the caller after the container exits. On other platforms the
-// original -p port-mapping approach is used.
-func buildDockerRunArgs(name, image string, port int) (args []string, cfgPath string, err error) {
+// config file that pins the HTTP, RPC, and serf ports — all three, because
+// with host networking any port left at its default (4646/4647/4648) collides
+// with a Nomad agent already running on the host. The agent binds to loopback
+// only, so it is never reachable from the LAN. cfgPath is non-empty on Linux
+// and must be removed by the caller after the container exits. On other
+// platforms the original -p port-mapping approach is used; the container has
+// its own network namespace there, so only the HTTP port needs mapping.
+func buildDockerRunArgs(name, image string, httpPort, rpcPort, serfPort int) (args []string, cfgPath string, err error) {
 	if runtime.GOOS != "linux" {
 		return []string{
 			"run", "-d",
 			"--name", name,
 			"--privileged",
-			"-p", fmt.Sprintf("%d:4646", port),
+			"-p", fmt.Sprintf("%d:4646", httpPort),
 			image,
 			"agent", "-dev",
 			"-bind=0.0.0.0",
@@ -106,13 +113,13 @@ func buildDockerRunArgs(name, image string, port int) (args []string, cfgPath st
 		}, "", nil
 	}
 
-	// Nomad has no CLI flag for the HTTP port; it must be set via a config
-	// file. Write a minimal one, mount it read-only, and pass -config.
+	// Nomad has no CLI flags for ports; they must be set via a config file.
+	// Write a minimal one, mount it read-only, and pass -config.
 	f, ferr := os.CreateTemp("", "nomad-reg-*.hcl")
 	if ferr != nil {
 		return nil, "", fmt.Errorf("create nomad config: %w", ferr)
 	}
-	if _, ferr = fmt.Fprintf(f, "ports {\n  http = %d\n}\n", port); ferr != nil {
+	if _, ferr = fmt.Fprintf(f, "ports {\n  http = %d\n  rpc  = %d\n  serf = %d\n}\n", httpPort, rpcPort, serfPort); ferr != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return nil, "", fmt.Errorf("write nomad config: %w", ferr)
@@ -131,7 +138,7 @@ func buildDockerRunArgs(name, image string, port int) (args []string, cfgPath st
 		"-v", f.Name() + ":/nomad-reg.hcl:ro",
 		image,
 		"agent", "-dev",
-		"-bind=0.0.0.0",
+		"-bind=127.0.0.1",
 		"-config=/nomad-reg.hcl",
 		"-log-level=error",
 	}, f.Name(), nil
@@ -161,13 +168,28 @@ func waitForNomadReady(addr string, timeout time.Duration) error {
 // machines and dedicated CI hosts, but can cause rare port-conflict flakes in
 // heavily loaded environments.
 func freePort() int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		panic(fmt.Sprintf("freePort: %v", err))
+	return freePorts(1)[0]
+}
+
+// freePorts returns n distinct unused TCP ports on loopback. All listeners
+// are held open until every port is allocated, so the same port cannot be
+// handed out twice. The same TOCTOU caveat as freePort applies once they are
+// closed.
+func freePorts(n int) []int {
+	ports := make([]int, n)
+	listeners := make([]net.Listener, n)
+	for i := range ports {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			panic(fmt.Sprintf("freePorts: %v", err))
+		}
+		listeners[i] = l
+		ports[i] = l.Addr().(*net.TCPAddr).Port
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	return port
+	for _, l := range listeners {
+		l.Close()
+	}
+	return ports
 }
 
 // ── Binary build ──────────────────────────────────────────────────────────────
@@ -600,4 +622,60 @@ func waitForHTTPStatus(url string, wantCode int, timeout time.Duration) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("%s did not return %d within %v", url, wantCode, timeout)
+}
+
+// ── Infra self-tests ──────────────────────────────────────────────────────────
+
+// TestInfra_FreePorts_Distinct verifies that freePorts never hands out the
+// same port twice within one call.
+func TestInfra_FreePorts_Distinct(t *testing.T) {
+	ports := freePorts(10)
+	seen := make(map[int]struct{}, len(ports))
+	for _, p := range ports {
+		if p == 0 {
+			t.Error("freePorts returned port 0")
+		}
+		if _, dup := seen[p]; dup {
+			t.Errorf("freePorts returned duplicate port %d in %v", p, ports)
+		}
+		seen[p] = struct{}{}
+	}
+}
+
+// TestInfra_BuildDockerRunArgs_PinsAllPorts verifies that on Linux the
+// generated Nomad config pins HTTP, RPC, and serf ports and the agent binds
+// to loopback. Leaving RPC or serf at their defaults collides with a Nomad
+// agent already running on the host, because the container uses host
+// networking.
+func TestInfra_BuildDockerRunArgs_PinsAllPorts(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("host-networking config path is Linux-only")
+	}
+
+	args, cfgPath, err := buildDockerRunArgs("test-name", "test-image", 10001, 10002, 10003)
+	if err != nil {
+		t.Fatalf("buildDockerRunArgs: %v", err)
+	}
+	if cfgPath == "" {
+		t.Fatal("expected a config file path on Linux")
+	}
+	defer os.Remove(cfgPath)
+
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("reading generated config: %v", err)
+	}
+	for _, want := range []string{"http = 10001", "rpc  = 10002", "serf = 10003"} {
+		if !strings.Contains(string(cfg), want) {
+			t.Errorf("config missing %q:\n%s", want, cfg)
+		}
+	}
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--network=host") {
+		t.Errorf("expected host networking in args: %v", args)
+	}
+	if !strings.Contains(joined, "-bind=127.0.0.1") {
+		t.Errorf("expected loopback bind in args: %v", args)
+	}
 }
