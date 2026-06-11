@@ -96,6 +96,58 @@ focuses on internal developer platforms and has no Nomad deployment story.
 
 ---
 
+## Adjacent prior art: image update automation
+
+GitOps pins image tags; something else has to notice that upstream moved.
+The tools in this space differ mainly in *where the bump is written*, which
+is the design-relevant axis (see
+[`docs/proposals/diun-integration.md`](proposals/diun-integration.md)):
+
+### Diun (crazy-max/diun)
+
+Watches container registries for new tags and changed digests, and sends
+notifications (webhook among ~20 channels). Providers define the watch list:
+Docker, Swarm, Kubernetes, **Nomad** (watches running Docker-driver tasks,
+opt-in via `diun.enable` meta — the same Operator Pattern shape as scalad),
+File (a YAML list on local disk), and Dockerfile. Per-image options cover
+tag regexes, semver sorting, and notify-on-new vs notify-on-update. It
+deliberately *only notifies*: it never writes to a cluster or a repo, has no
+query API (push-only, each event delivered once), and keeps its own seen-state
+in an embedded store. This makes it composable with a GitOps operator rather
+than competing with one, and it is the planned integration for
+nomad-botherer's update-availability surface.
+
+### Renovate (renovatebot/renovate)
+
+Opens PRs against the repo when dependencies — including Docker image
+references — have newer versions. Writes to *Git*, which keeps the GitOps
+invariant intact. The catch for this project: Nomad HCL is not a natively
+supported manager, so image references in job files need custom regex
+managers. Renovate can coexist with nomad-botherer (Renovate bumps Git,
+nomad-botherer applies), and the planned patch-helper endpoint deliberately
+leaves room for it or similar tooling to own the PR side.
+
+### argocd-image-updater (Argo project)
+
+The Kubernetes precedent for bolting image tracking onto a GitOps operator.
+Watches registries for images used by Argo CD applications and supports two
+write-back methods: commit the bump to Git (preserves the GitOps model) or
+mutate the application's parameters directly in-cluster (faster, but the
+live state now disagrees with Git). The existence of both modes — and the
+documented advice to prefer the Git write-back — is a useful confirmation
+that "surface the update, let Git change first" is the defensible default.
+
+### Keel (keel-sh/keel)
+
+A Kubernetes operator that updates workloads *in-cluster* when new images
+appear, with optional approval workflows. The cluster drifts ahead of Git
+by design; Git stops being the source of truth. This is precisely the
+failure mode nomad-botherer avoids by never applying anything that is not
+in Git: image updates are surfaced and a diff is offered, but the change
+must land in the repo before it lands in Nomad.
+
+---
+
 ## What nomad-botherer does differently today
 
 nomad-botherer currently only detects drift; it does not apply changes. The
