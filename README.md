@@ -607,9 +607,14 @@ against a real cluster.
 make test-regression
 ```
 
-This pulls the default Nomad image (`1.9.3`), starts a dev-mode cluster, runs
+This pulls the default Nomad image (`1.9.6`), starts a dev-mode cluster, runs
 all tests, and stops the container on exit. The full suite takes roughly 5–10
 minutes.
+
+On Linux the container uses host networking with the agent's HTTP, RPC, and
+serf ports pinned to randomly chosen free ports and bound to loopback, so the
+suite runs cleanly alongside a real Nomad agent on the same host (no clash
+with 4646/4647/4648) and is never reachable from the LAN.
 
 #### Targeting a specific Nomad version
 
