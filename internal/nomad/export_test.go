@@ -34,6 +34,11 @@ func MetaOnlyDiffs(d *Differ) *prometheus.CounterVec {
 	return d.metaOnlyDiffs
 }
 
+// UpdatesBlockedExistingDrift exposes the pre-existing-drift block counter.
+func UpdatesBlockedExistingDrift(d *Differ) *prometheus.CounterVec {
+	return d.updatesBlockedExistingDrift
+}
+
 // LastNomadIndex exposes the cached Raft index for skip-invalidation tests.
 func LastNomadIndex(d *Differ) uint64 {
 	d.mu.RLock()

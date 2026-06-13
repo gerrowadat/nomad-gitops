@@ -47,6 +47,12 @@ type Config struct {
 	ApplyMetaOnlyChanges bool
 	CountMetaOnlyChanges bool
 
+	// ApplyExistingDrift controls whether drift that already existed when a
+	// job entered management scope (gained the meta tag while the process was
+	// running) is applied. Off by default: opting a job in does not retroactively
+	// mutate it; only changes committed after opt-in apply.
+	ApplyExistingDrift bool
+
 	// Job selection. Git is always the source of truth for nomad-botherer's
 	// own meta keys: when a job has an HCL file in the repo, that file alone
 	// decides selection and policy. There is deliberately no flag to invert
@@ -98,6 +104,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.DurationVar(&c.ApplyInterval, "apply-interval", envDurationOrDefault("APPLY_INTERVAL", 10*time.Second), "Fallback cadence of the apply loop; enqueued updates are also applied immediately")
 	fs.BoolVar(&c.ApplyMetaOnlyChanges, "apply-meta-only-changes", envBoolOrDefault("APPLY_META_ONLY_CHANGES", false), "Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. gitops_managed). Off by default: re-registering a running job just to push these keys is disruptive and unnecessary (the HCL is already authoritative), so they ride along the next real update instead.")
 	fs.BoolVar(&c.CountMetaOnlyChanges, "count-meta-only-changes", envBoolOrDefault("COUNT_META_ONLY_CHANGES", false), "Count a managed-meta-only diff as drift (surface it on /diffs, /healthz, and the drift metrics). Off by default so these expected differences do not trigger drift alerts.")
+	fs.BoolVar(&c.ApplyExistingDrift, "apply-existing-drift", envBoolOrDefault("APPLY_EXISTING_DRIFT", false), "When a job enters management scope (gains the managed meta tag while nomad-botherer is running), apply drift that already existed at that moment. Off by default (conservative): opting a job in does not retroactively mutate it; only changes committed after opt-in apply. Jobs already managed when the process starts are unaffected — their drift reconciles normally.")
 	fs.StringVar(&c.JobSelectorGlob, "job-selector-glob", envOrDefault("JOB_SELECTOR_GLOB", ""), "Glob pattern selecting jobs by name (e.g. 'myprefix-*', '*' for all). Jobs matching either this or --managed-meta-prefix are watched. Empty means no glob selection.")
 	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-botherer (e.g. 'gitops' means 'gitops_managed = true' in a job's HCL opts it in). Git is always the source of truth for these keys: when a job has an HCL file, the live job's keys are ignored for selection. Empty disables meta-based selection.")
 	fs.DurationVar(&c.MaxGitStaleness, "max-git-staleness", envDurationOrDefault("MAX_GIT_STALENESS", 0), "Maximum time since last successful git fetch before forcing a refresh (0 disables)")

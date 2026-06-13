@@ -329,6 +329,7 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--apply-interval` | `APPLY_INTERVAL` | `10s` | Fallback cadence of the apply loop; enqueued updates are also applied immediately. |
 | `--apply-meta-only-changes` | `APPLY_META_ONLY_CHANGES` | `false` | Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. `gitops_managed`). Off by default — re-registering a running job just to push these keys is disruptive and unnecessary; they ride along the next real update. |
 | `--count-meta-only-changes` | `COUNT_META_ONLY_CHANGES` | `false` | Count a managed-meta-only diff as drift (surface it on `/diffs`, `/healthz`, and the drift metrics). Off by default so these expected differences do not trigger alerts. |
+| `--apply-existing-drift` | `APPLY_EXISTING_DRIFT` | `false` | When a job gains the managed meta tag while nomad-botherer is running, apply drift that already existed at that moment. Off by default — opting a job in does not retroactively mutate it; only changes committed after opt-in apply. Jobs already managed at startup reconcile normally. |
 | `--job-selector-glob` | `JOB_SELECTOR_GLOB` | *(empty — no glob)* | Glob pattern selecting jobs to watch by name (e.g. `myprefix-*`, `*` for all). Combined with `--managed-meta-prefix` as a union. |
 | `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-botherer. With prefix `gitops`, the key `gitops_managed = "true"` opts a job in. Empty disables meta-based selection. |
 | `--max-git-staleness` | `MAX_GIT_STALENESS` | `0` (disabled) | If the git repo has not been successfully fetched within this window, force an immediate fetch. Set to `0` to disable. E.g. `--max-git-staleness=30m` |
@@ -436,6 +437,28 @@ meta change is still not an image change, so `image-only` keeps blocking it),
 and `--count-meta-only-changes` makes it count as drift. A diff that mixes a
 meta-key change with any *other* change is a normal diff and is unaffected by
 these flags.
+
+### Opting in a job that already drifted
+
+When you add the meta tag to a job that *already* differs from its HCL — say
+you bumped its image in Git a while ago, and only now add `gitops_managed` —
+that drift is **pre-existing**: it was there before the job entered scope.
+By default nomad-botherer does **not** apply it. Opting a job into management
+should not, on its own, trigger a mutation based on drift you may not have
+reviewed; only changes committed *after* the tag is added are applied.
+
+Set `--apply-existing-drift` to apply pre-existing drift at opt-in instead —
+then the job converges to its HCL as soon as the tag lands.
+
+This is scoped precisely to the opt-in moment, which nomad-botherer must
+*witness*: a job that gains the tag while the process is running is frozen at
+that commit until a later commit arrives (or the flag is set). A job that
+already carries the tag when the process starts is **established**, not
+freshly opted in, so its drift reconciles normally — a restart does not
+freeze your whole cluster. The freeze is counted in
+`nomad_botherer_updates_blocked_preexisting_total{job}`. Jobs selected by
+`--job-selector-glob` are always in scope and have no opt-in moment, so this
+gate never applies to them.
 
 ### What gets applied, and how
 
@@ -618,6 +641,7 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_meta_key_issues_total` | Counter | `job`, `issue` | Job meta keys under the managed prefix that nomad-botherer cannot act on: `unknown_key` (e.g. a typo like `gitops_managd` or `gitops.managed`) or `invalid_value` (a recognised key with an unusable value, e.g. `gitops_managed = "True"`). Counted every cycle the issue persists; logged once per unique issue (WARN for unknown keys, ERROR for bad values). |
 | `nomad_botherer_meta_key_changes_total` | Counter | `job`, `source` | Managed-prefix meta keys added, removed, or changed between check cycles, on the HCL side (a commit changed them) or the live side (someone re-registered the job manually). Each transition is also logged at INFO with the behavioural consequence. |
 | `nomad_botherer_meta_only_diffs_total` | Counter | `job` | Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (`--count-meta-only-changes`, `--apply-meta-only-changes`); they converge on the next real update. A non-zero rate is normal after opting a running job in via a commit. |
+| `nomad_botherer_updates_blocked_preexisting_total` | Counter | `job` | Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable applying it with `--apply-existing-drift`. |
 
 #### Git tracking
 

@@ -114,6 +114,9 @@ type Differ struct {
 	// Both off by default.
 	applyMetaOnlyChanges bool
 	countMetaOnlyChanges bool
+	// applyExistingDrift allows drift that pre-existed a job's scope entry
+	// (gaining the meta tag while running) to be applied. Off by default.
+	applyExistingDrift bool
 	// applyInterval is the fallback cadence of the applier loop; enqueues
 	// also wake it immediately via applyCh.
 	applyInterval time.Duration
@@ -127,8 +130,14 @@ type Differ struct {
 
 	// prevMeta holds the previous cycle's prefix-key snapshots per
 	// (source, job), used to notice and log meta-key transitions.
-	metaMu   sync.Mutex
-	prevMeta map[string]metaState
+	// prevSelected is the set of job IDs in scope at the previous cycle, and
+	// scopeEntryCommit holds, for jobs that entered scope while the process
+	// was running and have not yet seen a later commit, the commit at which
+	// they entered. All three are protected by metaMu.
+	metaMu           sync.Mutex
+	prevMeta         map[string]metaState
+	prevSelected     map[string]bool
+	scopeEntryCommit map[string]string
 
 	mu             sync.RWMutex
 	diffs          []JobDiff
@@ -158,6 +167,7 @@ type Differ struct {
 	metaKeyIssues                  *prometheus.CounterVec
 	metaKeyChanges                 *prometheus.CounterVec
 	metaOnlyDiffs                  *prometheus.CounterVec
+	updatesBlockedExistingDrift    *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -183,6 +193,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		enableJobCreation:    cfg.EnableJobCreation,
 		applyMetaOnlyChanges: cfg.ApplyMetaOnlyChanges,
 		countMetaOnlyChanges: cfg.CountMetaOnlyChanges,
+		applyExistingDrift:   cfg.ApplyExistingDrift,
 		applyInterval:        applyInterval,
 		updateQueue:       NewUpdateQueue(),
 		applyCh:           make(chan struct{}, 1),
@@ -262,6 +273,10 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		metaOnlyDiffs: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_meta_only_diffs_total",
 			Help: "Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (see --count-meta-only-changes, --apply-meta-only-changes); they converge on the next real update.",
+		}, []string{"job"}),
+		updatesBlockedExistingDrift: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_updates_blocked_preexisting_total",
+			Help: "Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable with --apply-existing-drift.",
 		}, []string{"job"}),
 	}
 
@@ -720,6 +735,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 
 	d.commitResults(diffs, selReasons, commit, listMeta, time.Now())
 	d.logMetaChanges(metaSeen)
+	d.recordScopeEntry(selReasons, commit)
 
 	var raftIndex uint64
 	if listMeta != nil {
@@ -727,7 +743,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 	}
 	enqueued := 0
 	for _, cand := range candidates {
-		if d.maybeEnqueueUpdate(cand, commit, raftIndex) {
+		if d.maybeEnqueueUpdate(cand, commit, raftIndex, d.isPreExistingDrift(cand.jobID)) {
 			enqueued++
 		}
 	}
@@ -756,13 +772,65 @@ func (d *Differ) effectivePolicy(meta map[string]string) UpdatePolicy {
 	return d.defaultPolicy
 }
 
-// maybeEnqueueUpdate applies the policy and creation gates to a candidate
-// and enqueues a JobUpdate if it passes. Reports whether an update was
+// recordScopeEntry updates the cross-cycle scope tracking. A job that is
+// selected this cycle but was not selected last cycle has just entered scope
+// while the process was running; it is frozen at the current commit so its
+// pre-existing drift is not applied until a later commit arrives. Jobs in
+// scope at startup (prevSelected nil on the first cycle) are never frozen, so
+// reconcile-on-start is preserved. The freeze lifts once the commit advances
+// past the entry commit or the job leaves scope.
+func (d *Differ) recordScopeEntry(selected map[string]SelectionReason, commit string) {
+	d.metaMu.Lock()
+	defer d.metaMu.Unlock()
+
+	next := make(map[string]string)
+	for jobID := range selected {
+		if entry, frozen := d.scopeEntryCommit[jobID]; frozen {
+			// Keep the freeze only while the commit has not advanced.
+			if entry == commit {
+				next[jobID] = entry
+			}
+		} else if d.prevSelected != nil && !d.prevSelected[jobID] {
+			// Newly entered scope while running.
+			next[jobID] = commit
+		}
+	}
+	d.scopeEntryCommit = next
+
+	d.prevSelected = make(map[string]bool, len(selected))
+	for jobID := range selected {
+		d.prevSelected[jobID] = true
+	}
+}
+
+// isPreExistingDrift reports whether jobID is currently frozen at its scope
+// entry — i.e. its drift pre-dates the job entering scope and no later commit
+// has arrived.
+func (d *Differ) isPreExistingDrift(jobID string) bool {
+	d.metaMu.Lock()
+	defer d.metaMu.Unlock()
+	_, frozen := d.scopeEntryCommit[jobID]
+	return frozen
+}
+
+// maybeEnqueueUpdate applies the policy, scope-entry, and creation gates to a
+// candidate and enqueues a JobUpdate if it passes. preExisting reports whether
+// the drift pre-dates the job entering scope. Reports whether an update was
 // enqueued.
-func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex uint64) bool {
+func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex uint64, preExisting bool) bool {
 	if c.class == DiffClassNone && !c.isCreation {
 		// Everything in the diff is autoscaler-owned Count/Scaling churn;
 		// Git has nothing to apply. The diff stays visible as an observation.
+		return false
+	}
+
+	if preExisting && !c.isCreation && !d.applyExistingDrift {
+		// The drift was already there when the job entered scope (opted in
+		// via meta tag while running). Conservative default: do not mutate a
+		// job just because it was opted in; only changes committed after
+		// opt-in apply. Enable with --apply-existing-drift.
+		slog.Info("Pre-existing drift not applied on scope entry; set --apply-existing-drift to apply", "job", c.jobID)
+		d.updatesBlockedExistingDrift.WithLabelValues(c.jobID).Inc()
 		return false
 	}
 

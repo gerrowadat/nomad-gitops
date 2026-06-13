@@ -68,6 +68,16 @@
     update with the same ID while it was IN_PROGRESS mutated the in-flight
     update's fields, which the applier reads without the queue lock.
     In-progress updates are now left strictly untouched.
+  - **Drift that pre-existed a job entering scope is not applied by
+    default.** When a job gains the managed meta tag while nomad-botherer is
+    running, any drift already present at that moment (e.g. an image bumped
+    in Git before the tag was added) is not retroactively applied — only
+    changes committed after opt-in are. `--apply-existing-drift` /
+    `APPLY_EXISTING_DRIFT` (default off) applies it instead. The gate is tied
+    to the witnessed opt-in transition, so jobs already managed at startup
+    reconcile normally (a restart does not freeze the cluster) and
+    glob-selected jobs are unaffected. Counted in
+    `nomad_botherer_updates_blocked_preexisting_total{job}`.
   - The web console index shows the apply mode (default policy, job
     creation flag, pending update count), and the regression suite gains
     end-to-end apply scenarios against a real cluster, including the

@@ -560,3 +560,101 @@ func TestApply_AutoscalerOnlyChurn_NotEnqueued(t *testing.T) {
 		t.Errorf("count drift should still be surfaced as a diff, got %d", len(diffs))
 	}
 }
+
+// metaSelectCfg selects jobs by meta only (no glob), so a job can be out of
+// scope until its HCL gains the managed key.
+func metaSelectCfg(applyExisting bool) *config.Config {
+	return &config.Config{
+		NomadNamespace:      "default",
+		ManagedMetaPrefix:   "gitops",
+		DefaultUpdatePolicy: "none",
+		ApplyExistingDrift:  applyExisting,
+	}
+}
+
+// optInMock returns a mock whose HCL job gains the gitops keys once *hasKey is
+// set. The live job exists with the given ModifyIndex; the plan reports an
+// image+meta diff (pre-existing drift plus the opt-in).
+func optInMock(hasKey *bool, calls *[]registerCall) *mockJobsClient {
+	mock := applyMock(nil, editedImagePlusMetaDiff(), 42, calls)
+	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
+		if *hasKey {
+			return &nomadapi.Job{ID: strPtr("test-job"), Meta: map[string]string{
+				"gitops_managed": "true", "gitops_update_policy": "full",
+			}}, nil
+		}
+		return &nomadapi.Job{ID: strPtr("test-job")}, nil
+	}
+	return mock
+}
+
+func TestApply_ExistingDrift_NotAppliedOnScopeEntry(t *testing.T) {
+	var calls []registerCall
+	var hasKey bool
+	d := nomad.NewWithClient(metaSelectCfg(false), optInMock(&hasKey, &calls))
+
+	// Cycle 1: job not opted in (no key, no glob) — out of scope.
+	runCheck(t, d, "commit0aaaaaa")
+	// Cycle 2: key added while running — scope entry; image drift is pre-existing.
+	hasKey = true
+	runCheck(t, d, "commit1bbbbbb")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 0 {
+		t.Errorf("pre-existing drift must not apply on scope entry by default, got %d calls", len(calls))
+	}
+	if got := testutil.ToFloat64(nomad.UpdatesBlockedExistingDrift(d).WithLabelValues("test-job")); got != 1 {
+		t.Errorf("blocked-preexisting metric: want 1, got %v", got)
+	}
+}
+
+func TestApply_ExistingDrift_AppliedWithFlag(t *testing.T) {
+	var calls []registerCall
+	var hasKey bool
+	d := nomad.NewWithClient(metaSelectCfg(true), optInMock(&hasKey, &calls))
+
+	runCheck(t, d, "commit0aaaaaa")
+	hasKey = true
+	runCheck(t, d, "commit1bbbbbb")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("with --apply-existing-drift, drift should apply on scope entry, got %d calls", len(calls))
+	}
+}
+
+func TestApply_ExistingDrift_AppliesAfterLaterCommit(t *testing.T) {
+	var calls []registerCall
+	var hasKey bool
+	d := nomad.NewWithClient(metaSelectCfg(false), optInMock(&hasKey, &calls))
+
+	runCheck(t, d, "commit0aaaaaa") // out of scope
+	hasKey = true
+	runCheck(t, d, "commit1bbbbbb") // scope entry: frozen, not applied
+	if len(calls) != 0 {
+		t.Fatalf("precondition: nothing applied at scope entry, got %d", len(calls))
+	}
+	// A later commit arrives: the freeze lifts and drift applies.
+	runCheck(t, d, "commit2cccccc")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("a commit after scope entry should lift the freeze and apply, got %d calls", len(calls))
+	}
+}
+
+// TestApply_ExistingDrift_ReconcilesAtStartup verifies the gate does not fire
+// for jobs already in scope on the first cycle (the reconcile-on-start path):
+// prevSelected is nil, so nothing is frozen.
+func TestApply_ExistingDrift_ReconcilesAtStartup(t *testing.T) {
+	var calls []registerCall
+	hasKey := true // already opted in before the process started observing
+	d := nomad.NewWithClient(metaSelectCfg(false), optInMock(&hasKey, &calls))
+
+	runCheck(t, d, "commit0aaaaaa") // first cycle: established, not frozen
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("a job already in scope at startup should reconcile, got %d calls", len(calls))
+	}
+}
