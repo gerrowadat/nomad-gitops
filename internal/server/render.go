@@ -50,6 +50,9 @@ func renderDiffsText(diffs []nomad.JobDiff, lastCheck time.Time, commit string, 
 				fmt.Fprintf(&b, "  %s\n", d.Detail)
 			}
 		}
+		if d.ApplyAction != "" {
+			fmt.Fprintf(&b, "  → %s\n", d.ApplyAction.Describe())
+		}
 	}
 
 	return b.String()

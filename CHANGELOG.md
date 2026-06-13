@@ -68,6 +68,24 @@
     update with the same ID while it was IN_PROGRESS mutated the in-flight
     update's fields, which the applier reads without the queue lock.
     In-progress updates are now left strictly untouched.
+  - **Drift that pre-existed a job entering scope is not applied by
+    default.** When the managed tag is added to a job that already differs
+    from its HCL (e.g. an image bumped in Git before the tag), that drift is
+    not retroactively applied — only changes committed after opt-in are.
+    `--apply-existing-drift` / `APPLY_EXISTING_DRIFT` (default off) applies it
+    instead. The decision is derived from git history (was the tag present in
+    the commit before HEAD for the job's file?), so it holds identically
+    whether the tag was added while running or before startup — a restart
+    never freezes an already-managed cluster. A file created with the tag in
+    one commit is not a retroactive opt-in and applies. Glob-selected jobs
+    have no opt-in moment and are unaffected. Counted in
+    `nomad_botherer_updates_blocked_preexisting_total{job}`.
+  - **Every diff carries an `apply_action` explaining whether and why it
+    will (not) be applied** — `queued`, `blocked_by_policy`,
+    `blocked_preexisting_drift`, `blocked_creation_disabled`,
+    `skipped_meta_only`, `observation_only`, or `no_actionable_change`.
+    Shown on `/diffs`, in the `/api/v1/diffs` and `/healthz` JSON, and in the
+    OpenAPI spec.
   - The web console index shows the apply mode (default policy, job
     creation flag, pending update count), and the regression suite gains
     end-to-end apply scenarios against a real cluster, including the

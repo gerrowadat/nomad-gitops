@@ -62,6 +62,9 @@ func main() {
 	}
 
 	watcher = gitwatch.New(cfg, onChange)
+	// The differ reads prior git state (via the watcher) to tell whether drift
+	// pre-dates a job's opt-in.
+	differ.SetHistorySource(watcher)
 
 	if err := watcher.Clone(ctx); err != nil {
 		slog.Error("Cloning repository", "err", err)

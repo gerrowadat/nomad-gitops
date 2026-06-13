@@ -1172,3 +1172,46 @@ func TestIndex_ApplyMode_EnabledWithPending(t *testing.T) {
 		t.Errorf("index should count only non-terminal updates as pending, got:\n%.500s", body)
 	}
 }
+
+func TestAPIDiffs_IncludesApplyAction(t *testing.T) {
+	key := "k-" + strings.Repeat("x", 16)
+	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main", APIKey: key}
+	diffSrc := &mockDiffSource{
+		lastCheck: time.Now(),
+		diffs: []nomad.JobDiff{
+			{JobID: "hass", DiffType: nomad.DiffTypeModified, Detail: "x", ApplyAction: nomad.ApplyActionPreExisting},
+		},
+	}
+	srv := server.NewWithRegistry(cfg, diffSrc, &mockGitSource{lastUpdate: time.Now()},
+		server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diffs", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"apply_action":"blocked_preexisting_drift"`) {
+		t.Errorf("API diffs should include apply_action, got %s", rec.Body.String())
+	}
+}
+
+func TestHealthz_IncludesApplyAction(t *testing.T) {
+	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
+	diffSrc := &mockDiffSource{
+		lastCheck: time.Now(),
+		diffs: []nomad.JobDiff{
+			{JobID: "hass", DiffType: nomad.DiffTypeModified, Detail: "x", ApplyAction: nomad.ApplyActionPreExisting},
+		},
+	}
+	srv := server.NewWithRegistry(cfg, diffSrc, &mockGitSource{lastUpdate: time.Now()},
+		server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"apply_action":"blocked_preexisting_drift"`) {
+		t.Errorf("/healthz should include apply_action, got %s", rec.Body.String())
+	}
+}

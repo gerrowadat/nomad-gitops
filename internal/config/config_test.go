@@ -690,3 +690,37 @@ func TestLoadFromArgs_MetaOnlyFlagsEnv(t *testing.T) {
 		t.Errorf("env vars not honoured: %+v", cfg)
 	}
 }
+
+func TestLoadFromArgs_ApplyExistingDriftDefault(t *testing.T) {
+	os.Unsetenv("APPLY_EXISTING_DRIFT")
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ApplyExistingDrift {
+		t.Error("ApplyExistingDrift should default to false")
+	}
+}
+
+func TestLoadFromArgs_ApplyExistingDriftSet(t *testing.T) {
+	os.Unsetenv("APPLY_EXISTING_DRIFT")
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git", "--apply-existing-drift"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ApplyExistingDrift {
+		t.Error("ApplyExistingDrift: want true after flag")
+	}
+}
+
+func TestLoadFromArgs_ApplyExistingDriftEnv(t *testing.T) {
+	os.Setenv("APPLY_EXISTING_DRIFT", "true")
+	t.Cleanup(func() { os.Unsetenv("APPLY_EXISTING_DRIFT") })
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ApplyExistingDrift {
+		t.Error("ApplyExistingDrift: want true from env")
+	}
+}

@@ -363,10 +363,11 @@ type HealthResponse struct {
 
 // DiffEntry is one element of HealthResponse.Diffs.
 type DiffEntry struct {
-	JobID    string `json:"job_id"`
-	HCLFile  string `json:"hcl_file,omitempty"`
-	DiffType string `json:"diff_type"`
-	Detail   string `json:"detail"`
+	JobID       string `json:"job_id"`
+	HCLFile     string `json:"hcl_file,omitempty"`
+	DiffType    string `json:"diff_type"`
+	Detail      string `json:"detail"`
+	ApplyAction string `json:"apply_action,omitempty"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -391,10 +392,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	entries := make([]DiffEntry, 0, len(diffs))
 	for _, d := range diffs {
 		entries = append(entries, DiffEntry{
-			JobID:    d.JobID,
-			HCLFile:  d.HCLFile,
-			DiffType: string(d.DiffType),
-			Detail:   d.Detail,
+			JobID:       d.JobID,
+			HCLFile:     d.HCLFile,
+			DiffType:    string(d.DiffType),
+			Detail:      d.Detail,
+			ApplyAction: string(d.ApplyAction),
 		})
 	}
 

@@ -66,9 +66,58 @@ type JobDiff struct {
 	DiffType DiffType `json:"diff_type"`
 	Detail   string   `json:"detail"`
 
+	// ApplyAction records what nomad-botherer will do about this diff and,
+	// when it will not apply it, why. Lets the API and web console explain
+	// non-application without log scraping.
+	ApplyAction ApplyAction `json:"apply_action,omitempty"`
+
 	// PlanDiff holds the structured diff from the Nomad plan API.
 	// Only populated for DiffTypeModified entries.
 	PlanDiff *nomadapi.JobDiff `json:"-"`
+}
+
+// ApplyAction is the disposition of a detected diff: whether it will be
+// applied and, if not, the reason.
+type ApplyAction string
+
+const (
+	// ApplyActionQueued means an update was enqueued and will be applied.
+	ApplyActionQueued ApplyAction = "queued"
+	// ApplyActionPolicyBlocked means the effective update policy disallows it.
+	ApplyActionPolicyBlocked ApplyAction = "blocked_by_policy"
+	// ApplyActionPreExisting means the drift pre-dated the job's opt-in.
+	ApplyActionPreExisting ApplyAction = "blocked_preexisting_drift"
+	// ApplyActionCreationBlocked means first-time registration is disabled.
+	ApplyActionCreationBlocked ApplyAction = "blocked_creation_disabled"
+	// ApplyActionMetaOnly means the diff is confined to our own meta keys.
+	ApplyActionMetaOnly ApplyAction = "skipped_meta_only"
+	// ApplyActionDeregister means the job is missing from HCL; deregistration
+	// is not implemented, so it is observation-only.
+	ApplyActionDeregister ApplyAction = "observation_only"
+	// ApplyActionNoChange means the only diff is autoscaler-owned churn.
+	ApplyActionNoChange ApplyAction = "no_actionable_change"
+)
+
+// Describe returns a human-readable explanation for display.
+func (a ApplyAction) Describe() string {
+	switch a {
+	case ApplyActionQueued:
+		return "queued for apply"
+	case ApplyActionPolicyBlocked:
+		return "not applied: blocked by update policy"
+	case ApplyActionPreExisting:
+		return "not applied: drift pre-dates opt-in (set --apply-existing-drift)"
+	case ApplyActionCreationBlocked:
+		return "not applied: job creation disabled (set --enable-job-creation)"
+	case ApplyActionMetaOnly:
+		return "not applied: change is confined to managed meta keys"
+	case ApplyActionDeregister:
+		return "not applied: deregistration is not implemented"
+	case ApplyActionNoChange:
+		return "no actionable change (autoscaler-owned)"
+	default:
+		return string(a)
+	}
 }
 
 // hclEntry is a parsed HCL job that has passed the preliminary selection filter.
@@ -78,6 +127,20 @@ type hclEntry struct {
 	file    string
 	globSel bool // matched by job-selector-glob
 	metaHCL bool // managed meta key present in parsed HCL
+}
+
+// HistorySource provides read-only access to prior git state, used to decide
+// whether drift pre-dates a job entering management scope. *gitwatch.Watcher
+// satisfies it. When nil, pre-existing-drift detection is disabled and drift
+// reconciles normally.
+type HistorySource interface {
+	// FileAtParentOf returns the content of path at the first parent of the
+	// named commit. ok is false when the commit is unknown, has no parent
+	// (root commit), or the file is absent there. The lookup is keyed off the
+	// commit being evaluated — not the repo's current HEAD — so the decision
+	// stays consistent with the HCL snapshot passed to Check even if the
+	// watcher pulls a newer commit concurrently.
+	FileAtParentOf(commit, path string) (content string, ok bool)
 }
 
 // NomadJobsClient is the subset of the Nomad API jobs client we use.
@@ -114,6 +177,15 @@ type Differ struct {
 	// Both off by default.
 	applyMetaOnlyChanges bool
 	countMetaOnlyChanges bool
+	// applyExistingDrift allows drift that pre-existed a job's scope entry
+	// (the managed tag added in the HEAD commit) to be applied. Off by default.
+	applyExistingDrift bool
+	// history answers whether the managed tag was present before HEAD, used to
+	// detect pre-existing drift. nil disables the check.
+	history HistorySource
+	// managedKeyRe matches the opt-in key set to "true" in raw HCL text, for
+	// the cheap parent-content check.
+	managedKeyRe *regexp.Regexp
 	// applyInterval is the fallback cadence of the applier loop; enqueues
 	// also wake it immediately via applyCh.
 	applyInterval time.Duration
@@ -126,7 +198,8 @@ type Differ struct {
 	metaIssuesLogged sync.Map
 
 	// prevMeta holds the previous cycle's prefix-key snapshots per
-	// (source, job), used to notice and log meta-key transitions.
+	// (source, job), used to notice and log meta-key transitions. Protected
+	// by metaMu.
 	metaMu   sync.Mutex
 	prevMeta map[string]metaState
 
@@ -158,6 +231,7 @@ type Differ struct {
 	metaKeyIssues                  *prometheus.CounterVec
 	metaKeyChanges                 *prometheus.CounterVec
 	metaOnlyDiffs                  *prometheus.CounterVec
+	updatesBlockedExistingDrift    *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -169,6 +243,13 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	applyInterval := cfg.ApplyInterval
 	if applyInterval <= 0 {
 		applyInterval = 10 * time.Second
+	}
+
+	var managedKeyRe *regexp.Regexp
+	if cfg.ManagedMetaPrefix != "" {
+		// Matches <prefix>_managed = "true" in raw HCL, in both the block form
+		// (bare key) and the object-expression form (quoted key).
+		managedKeyRe = regexp.MustCompile(`(?m)"?` + regexp.QuoteMeta(cfg.ManagedMetaPrefix) + `_managed"?\s*=\s*"true"`)
 	}
 
 	f := promauto.With(reg)
@@ -183,6 +264,8 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		enableJobCreation:    cfg.EnableJobCreation,
 		applyMetaOnlyChanges: cfg.ApplyMetaOnlyChanges,
 		countMetaOnlyChanges: cfg.CountMetaOnlyChanges,
+		applyExistingDrift:   cfg.ApplyExistingDrift,
+		managedKeyRe:         managedKeyRe,
 		applyInterval:        applyInterval,
 		updateQueue:       NewUpdateQueue(),
 		applyCh:           make(chan struct{}, 1),
@@ -262,6 +345,10 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		metaOnlyDiffs: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_meta_only_diffs_total",
 			Help: "Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (see --count-meta-only-changes, --apply-meta-only-changes); they converge on the next real update.",
+		}, []string{"job"}),
+		updatesBlockedExistingDrift: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_updates_blocked_preexisting_total",
+			Help: "Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable with --apply-existing-drift.",
 		}, []string{"job"}),
 	}
 
@@ -424,7 +511,9 @@ type updateCandidate struct {
 	job         *nomadapi.Job
 	modifyIndex uint64
 	class       DiffClass
-	isCreation  bool // job absent (or dead) in Nomad: first-time registration
+	isCreation  bool        // job absent (or dead) in Nomad: first-time registration
+	globSel     bool        // selected by job-selector-glob (no opt-in moment)
+	action      ApplyAction // disposition, decided in decideApplyAction
 }
 
 // jobModifyIndex safely extracts a job's ModifyIndex.
@@ -464,7 +553,7 @@ func (d *Differ) checkHCLCandidate(jobID string, entry hclEntry, q *nomadapi.Que
 		// is exactly the guard a first registration wants.
 		cand := &updateCandidate{
 			jobID: jobID, hclFile: entry.file, job: entry.job,
-			modifyIndex: 0, class: DiffClassOther, isCreation: true,
+			modifyIndex: 0, class: DiffClassOther, isCreation: true, globSel: entry.globSel,
 		}
 		return true, reason, diff, cand
 	}
@@ -488,7 +577,7 @@ func (d *Differ) checkHCLCandidate(jobID string, entry hclEntry, q *nomadapi.Que
 		// token is its current ModifyIndex, not 0.
 		cand := &updateCandidate{
 			jobID: jobID, hclFile: entry.file, job: entry.job,
-			modifyIndex: jobModifyIndex(nomadJob), class: DiffClassOther, isCreation: true,
+			modifyIndex: jobModifyIndex(nomadJob), class: DiffClassOther, isCreation: true, globSel: entry.globSel,
 		}
 		return true, reason, diff, cand
 	}
@@ -536,7 +625,7 @@ func (d *Differ) checkHCLCandidate(jobID string, entry hclEntry, q *nomadapi.Que
 		}
 		cand := &updateCandidate{
 			jobID: jobID, hclFile: entry.file, job: entry.job,
-			modifyIndex: jobModifyIndex(nomadJob), class: class,
+			modifyIndex: jobModifyIndex(nomadJob), class: class, globSel: entry.globSel,
 		}
 		return true, reason, diff, cand
 	}
@@ -655,10 +744,18 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		}
 		selReasons[jobID] = mergeSelectionReason(selReasons[jobID], reason)
 		hclJobSet[jobID] = struct{}{}
+		if cand != nil {
+			// Decide the disposition once; it is recorded on the diff (for the
+			// API/console) and drives whether the update is enqueued below.
+			cand.action = d.decideApplyAction(cand, commit)
+		}
 		if diff != nil {
 			metaOnly := cand != nil && cand.class == DiffClassManagedMetaOnly
 			if metaOnly {
 				d.metaOnlyDiffs.WithLabelValues(jobID).Inc()
+			}
+			if cand != nil {
+				diff.ApplyAction = cand.action
 			}
 			// A diff confined to our own meta keys is an expected,
 			// non-disruptive difference. By default it is not counted as
@@ -711,9 +808,10 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		selReasons[j.ID] = mergeSelectionReason(selReasons[j.ID], reason)
 		if _, ok := hclJobSet[j.ID]; !ok {
 			diffs = append(diffs, JobDiff{
-				JobID:    j.ID,
-				DiffType: DiffTypeMissingFromHCL,
-				Detail:   fmt.Sprintf("job is running in Nomad (status: %s) but has no HCL definition in the repo", j.Status),
+				JobID:       j.ID,
+				DiffType:    DiffTypeMissingFromHCL,
+				Detail:      fmt.Sprintf("job is running in Nomad (status: %s) but has no HCL definition in the repo", j.Status),
+				ApplyAction: ApplyActionDeregister,
 			})
 		}
 	}
@@ -727,7 +825,8 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 	}
 	enqueued := 0
 	for _, cand := range candidates {
-		if d.maybeEnqueueUpdate(cand, commit, raftIndex) {
+		if cand.action == ApplyActionQueued {
+			d.enqueueUpdate(cand, commit, raftIndex)
 			enqueued++
 		}
 	}
@@ -756,14 +855,61 @@ func (d *Differ) effectivePolicy(meta map[string]string) UpdatePolicy {
 	return d.defaultPolicy
 }
 
-// maybeEnqueueUpdate applies the policy and creation gates to a candidate
-// and enqueues a JobUpdate if it passes. Reports whether an update was
-// enqueued.
-func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex uint64) bool {
+// SetHistorySource wires the git-history accessor used to detect pre-existing
+// drift. Called once at startup after the watcher exists.
+func (d *Differ) SetHistorySource(h HistorySource) {
+	d.history = h
+}
+
+// isPreExistingDrift reports whether a candidate's drift pre-dates the job
+// entering management scope — i.e. the managed opt-in tag was added in the
+// commit being evaluated (absent in that commit's parent version of the job's
+// HCL file). This is derived from git history, so it holds identically whether
+// the tag was added while the process was running or before it started: a job
+// already managed in an earlier commit is established and reconciles normally;
+// one opted in at this commit is frozen until a later commit arrives.
+//
+// Glob-selected jobs are always in scope and have no opt-in moment, so they
+// are never pre-existing. Creations have no live job to pre-date. When history
+// is unavailable the check is skipped (not pre-existing) so reconciliation is
+// not broken.
+func (d *Differ) isPreExistingDrift(c *updateCandidate, commit string) bool {
+	if c.isCreation || c.globSel || d.history == nil || d.managedKeyRe == nil || c.hclFile == "" {
+		return false
+	}
+	parent, ok := d.history.FileAtParentOf(commit, c.hclFile)
+	if !ok {
+		// No parent version: the file was created at this commit (or it is the
+		// root commit). The tag and the spec were introduced together, so the
+		// tag was present when the diff was introduced — not a retroactive
+		// opt-in.
+		return false
+	}
+	// Tag present at the parent → the job was already managed before this
+	// commit → established. Absent → the tag was added to a pre-existing file
+	// at this commit → retroactive opt-in, so the drift pre-dates it.
+	return !d.managedKeyRe.MatchString(parent)
+}
+
+// decideApplyAction determines a candidate's disposition and records the
+// reason via metrics/logs. It does not enqueue anything; the caller enqueues
+// when the action is ApplyActionQueued. The gates are ordered most-conservative
+// first so the surfaced reason is the primary one.
+func (d *Differ) decideApplyAction(c *updateCandidate, commit string) ApplyAction {
 	if c.class == DiffClassNone && !c.isCreation {
 		// Everything in the diff is autoscaler-owned Count/Scaling churn;
 		// Git has nothing to apply. The diff stays visible as an observation.
-		return false
+		return ApplyActionNoChange
+	}
+
+	if !c.isCreation && d.isPreExistingDrift(c, commit) && !d.applyExistingDrift {
+		// The drift was already there when the job entered scope (the managed
+		// tag was added in the HEAD commit). Conservative default: opting a job
+		// in does not retroactively mutate it; only changes committed after
+		// opt-in apply. Enable with --apply-existing-drift.
+		slog.Info("Pre-existing drift not applied on opt-in; set --apply-existing-drift to apply", "job", c.jobID)
+		d.updatesBlockedExistingDrift.WithLabelValues(c.jobID).Inc()
+		return ApplyActionPreExisting
 	}
 
 	if c.class == DiffClassManagedMetaOnly && !c.isCreation && !d.applyMetaOnlyChanges {
@@ -773,29 +919,35 @@ func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex
 		// converge on the next real update (registering from HCL carries them
 		// along, even under an image-only policy). Enable with
 		// --apply-meta-only-changes.
-		return false
+		return ApplyActionMetaOnly
 	}
 
 	policy := d.effectivePolicy(c.job.Meta)
 	switch policy {
 	case UpdatePolicyNone:
 		d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(policy)).Inc()
-		return false
+		return ApplyActionPolicyBlocked
 	case UpdatePolicyImageOnly:
 		// Initial registration is full-only by design: registering a job
 		// for the first time is not an image-only change.
 		if c.isCreation || c.class != DiffClassImageOnly {
 			d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(policy)).Inc()
-			return false
+			return ApplyActionPolicyBlocked
 		}
 	}
 
 	if c.isCreation && !d.enableJobCreation {
 		slog.Info("Job creation blocked: --enable-job-creation is off", "job", c.jobID)
 		d.updatesBlockedCreationDisabled.WithLabelValues(c.jobID).Inc()
-		return false
+		return ApplyActionCreationBlocked
 	}
 
+	return ApplyActionQueued
+}
+
+// enqueueUpdate places an approved candidate's update on the queue.
+func (d *Differ) enqueueUpdate(c *updateCandidate, commit string, raftIndex uint64) {
+	policy := d.effectivePolicy(c.job.Meta)
 	superseded := d.updateQueue.Enqueue(JobUpdate{
 		UpdateID:            updateID(c.jobID, commit),
 		JobID:               c.jobID,
@@ -815,7 +967,6 @@ func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex
 	}
 	d.pendingUpdates.Set(float64(d.updateQueue.PendingCount()))
 	slog.Info("Enqueued job update", "job", c.jobID, "update_id", updateID(c.jobID, commit), "policy", policy, "creation", c.isCreation)
-	return true
 }
 
 // ForceCheck runs a diff check unconditionally because the Nomad state has

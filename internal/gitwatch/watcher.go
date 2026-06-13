@@ -228,6 +228,42 @@ func (w *Watcher) ReadHCLFiles() (map[string]string, error) {
 	return result, nil
 }
 
+// FileAtParentOf returns the content of path as it was at the first parent of
+// the named commit. ok is false when the repo is not cloned, the commit is
+// unknown or has no parent (the root commit), or the file did not exist at the
+// parent. Keying off an explicit commit — rather than the repo's current HEAD —
+// keeps the answer consistent with the HCL snapshot being evaluated even if a
+// concurrent pull has advanced HEAD. It is used to decide whether a change at
+// that commit (such as adding the managed meta tag) is new relative to the
+// previous commit.
+func (w *Watcher) FileAtParentOf(commit, path string) (content string, ok bool) {
+	w.mu.RLock()
+	repo := w.repo
+	w.mu.RUnlock()
+	if repo == nil || commit == "" {
+		return "", false
+	}
+
+	c, err := repo.CommitObject(plumbing.NewHash(commit))
+	if err != nil || c.NumParents() == 0 {
+		return "", false
+	}
+	parent, err := c.Parent(0)
+	if err != nil {
+		return "", false
+	}
+	f, err := parent.File(path)
+	if err != nil {
+		// Includes object.ErrFileNotFound: the file did not exist at the parent.
+		return "", false
+	}
+	content, err = f.Contents()
+	if err != nil {
+		return "", false
+	}
+	return content, true
+}
+
 // pull fetches the latest changes and calls onChange if the HEAD moved.
 func (w *Watcher) pull(ctx context.Context) {
 	auth, err := w.buildAuth()

@@ -290,3 +290,31 @@ func TestDiffs_RedactionEnabled_NoDiffs_NoBanner(t *testing.T) {
 		t.Error("expected 'No differences' message")
 	}
 }
+
+// ── apply action / reason ──────────────────────────────────────────────────────
+
+func TestDiffs_ShowsApplyActionReason(t *testing.T) {
+	diffs := []nomad.JobDiff{
+		{
+			JobID:       "hass",
+			HCLFile:     "hass.hcl",
+			DiffType:    nomad.DiffTypeModified,
+			Detail:      "plan shows Edited",
+			ApplyAction: nomad.ApplyActionPreExisting,
+		},
+	}
+	body := diffsResponse(t, diffs, time.Now())
+	if !strings.Contains(body, "drift pre-dates opt-in") {
+		t.Errorf("/diffs should explain why the diff is not applied, got:\n%s", body)
+	}
+}
+
+func TestDiffs_NoApplyActionWhenEmpty(t *testing.T) {
+	diffs := []nomad.JobDiff{
+		{JobID: "api", DiffType: nomad.DiffTypeModified, Detail: "x"},
+	}
+	body := diffsResponse(t, diffs, time.Now())
+	if strings.Contains(body, "→") {
+		t.Errorf("no reason arrow expected when ApplyAction is empty, got:\n%s", body)
+	}
+}

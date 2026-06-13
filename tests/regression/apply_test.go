@@ -398,3 +398,90 @@ func TestApplyE2E_MetaOnlyChange_AppliedWithFlag(t *testing.T) {
 	}
 	t.Error("with --apply-meta-only-changes the live meta should converge to carry gitops_managed")
 }
+
+// TestApplyE2E_ExistingDrift reproduces the "opt a drifted job in" scenario:
+// a running job already differs from its HCL (args), then the gitops meta tag
+// is added by a later commit while nomad-botherer is watching. By default the
+// pre-existing drift is not applied; with --apply-existing-drift it is.
+func TestApplyE2E_ExistingDrift(t *testing.T) {
+	run := func(t *testing.T, applyExisting bool) (jobID, baseURL string) {
+		repoURL, workDir, branch := createGitRepo(t)
+		jobID = uniqueJobID("existing-drift")
+
+		// Running job: args ["600"], no gitops keys.
+		registerJobHCL(t, testJobHCL(jobID))
+		waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+		// Commit 1: HCL drifts the args to ["999"], still no gitops keys, so
+		// the job is not yet in scope (no glob configured).
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLModified(jobID)})
+
+		extra := []string{"--repo-url=" + repoURL, "--branch=" + branch, "--apply-interval=1s", "--poll-interval=1s"}
+		if applyExisting {
+			extra = append(extra, "--apply-existing-drift")
+		}
+		baseURL = startBotherer(t, extra...)
+
+		// Let it observe the out-of-scope job for a couple of cycles.
+		time.Sleep(3 * time.Second)
+
+		// Commit 2: add the gitops tag while running — the job enters scope
+		// with the args drift already present.
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLWithPolicy(jobID, "full")})
+		return jobID, baseURL
+	}
+
+	t.Run("default leaves pre-existing drift alone", func(t *testing.T) {
+		jobID, _ := run(t, false)
+		time.Sleep(8 * time.Second)
+		if args := jobTaskArgs(t, jobID); len(args) != 1 || args[0] != "600" {
+			t.Errorf("pre-existing drift must not be applied on opt-in by default; args are now %v", args)
+		}
+	})
+
+	t.Run("flag applies pre-existing drift", func(t *testing.T) {
+		jobID, _ := run(t, true)
+		waitForTaskArgs(t, jobID, "999", 60*time.Second)
+	})
+}
+
+// TestApplyE2E_ExistingDrift_AtStartup verifies the git-history-based gate
+// works when nomad-botherer starts up already pointing at the opt-in commit
+// (it did not witness the tag being added). The job ran drifted, the drift and
+// then the tag were committed, and only then is the binary started.
+func TestApplyE2E_ExistingDrift_AtStartup(t *testing.T) {
+	run := func(t *testing.T, applyExisting bool) string {
+		repoURL, workDir, branch := createGitRepo(t)
+		jobID := uniqueJobID("existing-startup")
+
+		// Running job: args ["600"], no gitops keys.
+		registerJobHCL(t, testJobHCL(jobID))
+		waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+		// Commit 1: drift the args, still no tag.
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLModified(jobID)})
+		// Commit 2: add the tag (opt-in). HEAD's parent (commit 1) lacks the tag.
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLWithPolicy(jobID, "full")})
+
+		// Only now start the binary — it never witnessed the opt-in.
+		extra := []string{"--repo-url=" + repoURL, "--branch=" + branch, "--apply-interval=1s"}
+		if applyExisting {
+			extra = append(extra, "--apply-existing-drift")
+		}
+		startBotherer(t, extra...)
+		return jobID
+	}
+
+	t.Run("default leaves pre-existing drift alone on startup", func(t *testing.T) {
+		jobID := run(t, false)
+		time.Sleep(8 * time.Second)
+		if args := jobTaskArgs(t, jobID); len(args) != 1 || args[0] != "600" {
+			t.Errorf("startup pre-existing drift must not apply by default; args are now %v", args)
+		}
+	})
+
+	t.Run("flag applies pre-existing drift on startup", func(t *testing.T) {
+		jobID := run(t, true)
+		waitForTaskArgs(t, jobID, "999", 60*time.Second)
+	})
+}
