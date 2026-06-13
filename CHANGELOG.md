@@ -52,6 +52,22 @@
     `..._updates_blocked_by_policy_total`,
     `..._updates_blocked_creation_disabled_total`).
   - Deregistration (`missing_from_hcl`) remains observation-only.
+  - **Changes confined to nomad-botherer's own meta keys are not, on their
+    own, drift.** When a commit adds or changes only a `gitops_*` key on a
+    running job, that diff is neither applied nor counted as drift by
+    default: re-registering a job purely to stamp our keys onto it is
+    disruptive and needless, since the HCL is already authoritative for
+    them. The keys converge opportunistically on the next real update
+    (an image bump under `image-only` carries them along). Two new flags
+    control this independently: `--apply-meta-only-changes` /
+    `APPLY_META_ONLY_CHANGES` (default off) and `--count-meta-only-changes`
+    / `COUNT_META_ONLY_CHANGES` (default off). Surfaced by the new
+    `nomad_botherer_meta_only_diffs_total{job}` counter and the meta-change
+    logs. A diff mixing a meta change with any other change is unaffected.
+  - Fixed a race in the update queue (flagged in review): re-enqueuing an
+    update with the same ID while it was IN_PROGRESS mutated the in-flight
+    update's fields, which the applier reads without the queue lock.
+    In-progress updates are now left strictly untouched.
   - The web console index shows the apply mode (default policy, job
     creation flag, pending update count), and the regression suite gains
     end-to-end apply scenarios against a real cluster, including the

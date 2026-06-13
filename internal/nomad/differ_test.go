@@ -8,6 +8,7 @@ import (
 
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/gerrowadat/nomad-botherer/internal/config"
 	"github.com/gerrowadat/nomad-botherer/internal/nomad"
@@ -1196,9 +1197,10 @@ func TestDiffer_SelectedJobs_NoDuplicates(t *testing.T) {
 
 // TestDiffer_GitIsIntent_MetaInHCLNotNomad verifies the default behaviour:
 // a job whose HCL carries the managed meta key is selected even when the
-// live Nomad instance does NOT carry it. Git is intent — the missing key on
-// the live job is itself drift (the plan shows the meta addition), which is
-// how opting a running job in via a commit converges.
+// live Nomad instance does NOT carry it (Git is intent). The only difference
+// — the missing meta key — is a managed-meta-only diff, so by default it is
+// NOT counted as drift and NOT applied; it is surfaced via its own counter
+// and converges on the next real update.
 func TestDiffer_GitIsIntent_MetaInHCLNotNomad(t *testing.T) {
 	mock := defaultMock()
 	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
@@ -1209,13 +1211,13 @@ func TestDiffer_GitIsIntent_MetaInHCLNotNomad(t *testing.T) {
 		s := "running"
 		return &nomadapi.Job{ID: strPtr("not-yet-managed"), Status: &s, Meta: nil}, nil, nil
 	}
-	// The plan reports the meta addition as drift.
+	// The plan reports only the meta addition as drift.
 	mock.planFn = func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error) {
 		return &nomadapi.JobPlanResponse{Diff: &nomadapi.JobDiff{
 			Type: "Edited",
 			Objects: []*nomadapi.ObjectDiff{
 				{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
-					{Type: "Added", Name: "Meta[gitops_managed]", New: "true"},
+					{Type: "Added", Name: "gitops_managed", New: "true"},
 				}},
 			},
 		}}, nil, nil
@@ -1230,8 +1232,11 @@ func TestDiffer_GitIsIntent_MetaInHCLNotNomad(t *testing.T) {
 		t.Fatalf("HCL opt-in key should select the job even without the live key, got %+v", jobs)
 	}
 	diffs, _, _ := d.Diffs()
-	if len(diffs) != 1 || diffs[0].DiffType != nomad.DiffTypeModified {
-		t.Errorf("the missing live key should surface as a modified diff, got %+v", diffs)
+	if len(diffs) != 0 {
+		t.Errorf("a managed-meta-only difference must not be counted as drift by default, got %+v", diffs)
+	}
+	if got := testutil.ToFloat64(nomad.MetaOnlyDiffs(d).WithLabelValues("not-yet-managed")); got != 1 {
+		t.Errorf("meta_only_diffs_total: want 1, got %v", got)
 	}
 }
 

@@ -327,6 +327,8 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--default-update-policy` | `DEFAULT_UPDATE_POLICY` | `none` | Update policy for managed jobs without an explicit `<prefix>_update_policy` meta key: `none` (detect only), `image-only`, or `full`. See [Applying changes](#applying-changes-gitops-mode). |
 | `--enable-job-creation` | `ENABLE_JOB_CREATION` | `false` | Allow first-time registration of jobs that exist in Git but not in Nomad. Requires an effective policy of `full` for the job. |
 | `--apply-interval` | `APPLY_INTERVAL` | `10s` | Fallback cadence of the apply loop; enqueued updates are also applied immediately. |
+| `--apply-meta-only-changes` | `APPLY_META_ONLY_CHANGES` | `false` | Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. `gitops_managed`). Off by default — re-registering a running job just to push these keys is disruptive and unnecessary; they ride along the next real update. |
+| `--count-meta-only-changes` | `COUNT_META_ONLY_CHANGES` | `false` | Count a managed-meta-only diff as drift (surface it on `/diffs`, `/healthz`, and the drift metrics). Off by default so these expected differences do not trigger alerts. |
 | `--job-selector-glob` | `JOB_SELECTOR_GLOB` | *(empty — no glob)* | Glob pattern selecting jobs to watch by name (e.g. `myprefix-*`, `*` for all). Combined with `--managed-meta-prefix` as a union. |
 | `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-botherer. With prefix `gitops`, the key `gitops_managed = "true"` opts a job in. Empty disables meta-based selection. |
 | `--max-git-staleness` | `MAX_GIT_STALENESS` | `0` (disabled) | If the git repo has not been successfully fetched within this window, force an immediate fetch. Set to `0` to disable. E.g. `--max-git-staleness=30m` |
@@ -409,6 +411,31 @@ the job still matches `--job-selector-glob` and remains watched"). A manual
 the same way. Transitions are counted in
 `nomad_botherer_meta_key_changes_total`. The first check after startup is a
 baseline and logs nothing.
+
+### Changes to our own meta keys are not, on their own, drift
+
+Because Git is the source of truth for the `gitops_*` keys, nomad-botherer
+reads them straight from the HCL — the running job does not need to carry
+them for the tool to behave correctly. So when a commit adds or changes one
+of *our* keys and nothing else differs, that diff is **managed-meta-only**:
+
+- It is **not applied** by default. Re-registering a running job purely to
+  stamp `gitops_managed` onto it would be a disruptive change for no
+  functional gain. The keys converge opportunistically on the next *real*
+  update — when an image, env, resource, or other change re-registers the
+  job, the current HCL (meta included) is what gets written. This holds even
+  under an `image-only` policy: an image bump carries the meta along.
+- It is **not counted as drift** by default, so it does not show up on
+  `/diffs` or `/healthz` and does not move the drift metrics — these
+  expected differences should not page anyone. They are surfaced instead by
+  `nomad_botherer_meta_only_diffs_total{job}` and the meta-change logs above.
+
+Both behaviours are independently configurable: `--apply-meta-only-changes`
+makes such a diff trigger an update (subject to the normal policy — a pure
+meta change is still not an image change, so `image-only` keeps blocking it),
+and `--count-meta-only-changes` makes it count as drift. A diff that mixes a
+meta-key change with any *other* change is a normal diff and is unaffected by
+these flags.
 
 ### What gets applied, and how
 
@@ -590,6 +617,7 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_job_updates_pending` | Gauge | — | Updates currently waiting to be applied. |
 | `nomad_botherer_meta_key_issues_total` | Counter | `job`, `issue` | Job meta keys under the managed prefix that nomad-botherer cannot act on: `unknown_key` (e.g. a typo like `gitops_managd` or `gitops.managed`) or `invalid_value` (a recognised key with an unusable value, e.g. `gitops_managed = "True"`). Counted every cycle the issue persists; logged once per unique issue (WARN for unknown keys, ERROR for bad values). |
 | `nomad_botherer_meta_key_changes_total` | Counter | `job`, `source` | Managed-prefix meta keys added, removed, or changed between check cycles, on the HCL side (a commit changed them) or the live side (someone re-registered the job manually). Each transition is also logged at INFO with the behavioural consequence. |
+| `nomad_botherer_meta_only_diffs_total` | Counter | `job` | Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (`--count-meta-only-changes`, `--apply-meta-only-changes`); they converge on the next real update. A non-zero rate is normal after opting a running job in via a commit. |
 
 #### Git tracking
 
@@ -791,7 +819,7 @@ calls. They are reliable against the isolated Docker-managed cluster.
 | `metrics_test.go` | All expected metric names registered at construction; gauge values match observed drift; skip counter; first-seen timestamps (set, stable, cleared); parse-error and non-job-skip counters |
 | `security_test.go` | Webhook HMAC-SHA256 (valid, invalid, missing, wrong algorithm, large body, concurrent flood, no-secret mode); JSON API auth (missing, wrong, correct key; 100-concurrent load); path-traversal job IDs; very large HCL files; HTML XSS escaping in the index page |
 | `e2e_test.go` | Binary lifecycle (503→200 on startup); drift detected over HTTP and `/diffs`; webhook triggers refresh without waiting for next poll interval; JSON API (`/api/v1/diffs`, `/api/v1/status`, `/api/v1/selected-jobs`, `/api/v1/version`, `POST /api/v1/refresh`, `/api/openapi.json`); `/metrics` endpoint content |
-| `apply_test.go` | GitOps apply, end to end with the real binary: drifted job converges when the HCL meta declares policy `full`; converges via `--default-update-policy=full`; **never writes under the default policy** (the critical negative test); opting a running job in via a single commit (meta-only selection, no glob) converges both the job and its live meta; job creation blocked without `--enable-job-creation` and performed with it; `image-only` policy blocks a non-image change; `/api/v1/updates` shows the `SUCCEEDED` record with its CAS token |
+| `apply_test.go` | GitOps apply, end to end with the real binary: drifted job converges when the HCL meta declares policy `full`; converges via `--default-update-policy=full`; **never writes under the default policy** (the critical negative test); opting a running job in via a single commit (meta-only selection, no glob) converges both the job and its live meta; job creation blocked without `--enable-job-creation` and performed with it; `image-only` policy blocks a non-image change; a commit adding only `gitops_*` meta keys leaves the running job alone and uncounted by default, and converges with `--apply-meta-only-changes`; `/api/v1/updates` shows the `SUCCEEDED` record with its CAS token |
 
 #### Nomad version compatibility
 

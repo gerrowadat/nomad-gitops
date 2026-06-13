@@ -96,7 +96,7 @@ func (d *Differ) applyUpdate(u *JobUpdate) {
 		d.invalidateSkip()
 		return
 	}
-	if classifyDiff(plan.Diff, autoscaledGroups(u.job)) == DiffClassNone {
+	if classifyDiff(plan.Diff, autoscaledGroups(u.job), d.managedMetaPrefix) == DiffClassNone {
 		slog.Info("Apply: plan shows no change, nothing to do", "job", u.JobID, "update_id", u.UpdateID)
 		d.completeUpdate(u, JobUpdateStatusSucceeded, 0, "")
 		return

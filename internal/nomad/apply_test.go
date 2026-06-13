@@ -6,10 +6,135 @@ import (
 	"testing"
 
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/gerrowadat/nomad-botherer/internal/config"
 	"github.com/gerrowadat/nomad-botherer/internal/nomad"
 )
+
+// metaOnlyManagedDiff is a plan diff whose only change is one of our own
+// meta keys being added to the live job.
+func metaOnlyManagedDiff() *nomadapi.JobDiff {
+	return &nomadapi.JobDiff{
+		Type: "Edited", ID: "test-job",
+		Objects: []*nomadapi.ObjectDiff{
+			{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
+				{Type: "Added", Name: "gitops_managed", New: "true"},
+			}},
+		},
+	}
+}
+
+// editedImagePlusMetaDiff is a plan diff with a Docker image change plus one
+// of our own meta keys.
+func editedImagePlusMetaDiff() *nomadapi.JobDiff {
+	return &nomadapi.JobDiff{
+		Type: "Edited", ID: "test-job",
+		Objects: []*nomadapi.ObjectDiff{
+			{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
+				{Type: "Added", Name: "gitops_managed", New: "true"},
+			}},
+		},
+		TaskGroups: []*nomadapi.TaskGroupDiff{
+			{Type: "Edited", Name: "web", Tasks: []*nomadapi.TaskDiff{taskDiffWithConfig(imageField())}},
+		},
+	}
+}
+
+func TestApply_MetaOnlyDiff_DefaultLeavesJobAlone(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "full"}
+	mock := applyMock(meta, metaOnlyManagedDiff(), 42, &calls)
+	d := nomad.NewWithClient(applyCfg("none", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 0 {
+		t.Errorf("a meta-only diff must not register by default even under policy full, got %d calls", len(calls))
+	}
+	if updates := d.Updates(); len(updates) != 0 {
+		t.Errorf("a meta-only diff must not enqueue an update, got %+v", updates)
+	}
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 0 {
+		t.Errorf("a meta-only diff must not be counted as drift by default, got %+v", diffs)
+	}
+	if got := testutil.ToFloat64(nomad.MetaOnlyDiffs(d).WithLabelValues("test-job")); got != 1 {
+		t.Errorf("meta_only_diffs_total: want 1, got %v", got)
+	}
+}
+
+func TestApply_MetaOnlyDiff_AppliedWithFlag(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "full"}
+	mock := applyMock(meta, metaOnlyManagedDiff(), 42, &calls)
+	cfg := applyCfg("none", false)
+	cfg.ApplyMetaOnlyChanges = true
+	d := nomad.NewWithClient(cfg, mock)
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("with --apply-meta-only-changes a meta-only diff under full should register, got %d calls", len(calls))
+	}
+}
+
+func TestApply_MetaOnlyDiff_CountedWithFlag(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true"}
+	mock := applyMock(meta, metaOnlyManagedDiff(), 42, &calls)
+	cfg := applyCfg("none", false)
+	cfg.CountMetaOnlyChanges = true
+	d := nomad.NewWithClient(cfg, mock)
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 1 || diffs[0].DiffType != nomad.DiffTypeModified {
+		t.Errorf("with --count-meta-only-changes a meta-only diff should be counted, got %+v", diffs)
+	}
+	// Counting is independent of applying: still no register under policy none.
+	if len(calls) != 0 {
+		t.Errorf("counting must not imply applying, got %d calls", len(calls))
+	}
+}
+
+func TestApply_ImagePlusMeta_ImageOnlyPolicy_ConvergesMetaOpportunistically(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "image-only"}
+	mock := applyMock(meta, editedImagePlusMetaDiff(), 42, &calls)
+	d := nomad.NewWithClient(applyCfg("none", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Fatalf("image+meta under image-only policy should apply, got %d calls", len(calls))
+	}
+	// The registered job is the full HCL job, so the meta keys ride along.
+	if calls[0].job.Meta["gitops_managed"] != "true" {
+		t.Errorf("the applied job should carry the HCL meta keys, got %v", calls[0].job.Meta)
+	}
+}
+
+func TestApply_MetaOnlyDiff_ImageOnlyPolicy_BlockedEvenWithApplyFlag(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_update_policy": "image-only"}
+	mock := applyMock(meta, metaOnlyManagedDiff(), 42, &calls)
+	cfg := applyCfg("none", false)
+	cfg.ApplyMetaOnlyChanges = true
+	d := nomad.NewWithClient(cfg, mock)
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 0 {
+		t.Errorf("a pure meta change is not an image change; image-only policy must block it, got %d calls", len(calls))
+	}
+}
 
 func uint64Ptr(v uint64) *uint64 { return &v }
 

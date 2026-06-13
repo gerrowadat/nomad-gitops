@@ -327,3 +327,74 @@ func TestApplyE2E_OptInViaGitCommit_Converges(t *testing.T) {
 		t.Errorf("live job should now carry the policy key, got %v", job.Meta)
 	}
 }
+
+// TestApplyE2E_MetaOnlyChange_LeavesJobAloneByDefault verifies that a commit
+// adding only nomad-botherer's own meta keys to a running job is not applied
+// and not counted as drift by default — the disruptive re-register is
+// avoided and no alert fires. This also exercises the real Nomad plan-diff
+// format for meta against the classifier.
+func TestApplyE2E_MetaOnlyChange_LeavesJobAloneByDefault(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	jobID := uniqueJobID("meta-only")
+
+	// Running job: args ["999"], no gitops meta.
+	registerJobHCL(t, testJobHCLModified(jobID))
+	waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+	// Commit adds only the gitops meta keys; the task args stay ["999"], so
+	// the only difference is the meta.
+	commitToGit(t, workDir, map[string]string{
+		jobID + ".hcl": testJobHCLWithPolicy(jobID, "full"),
+	})
+
+	apiKey := "meta-only-key-" + randomSuffix()
+	baseURL := startBothererWithAPI(t, apiKey, applyArgs(repoURL, branch, jobID)...)
+
+	time.Sleep(8 * time.Second)
+
+	job, _, err := testNomadClient.Jobs().Info(jobID, &nomadapi.QueryOptions{})
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if job.Meta["gitops_managed"] == "true" {
+		t.Error("a meta-only change must not be applied by default; the live meta was converged")
+	}
+
+	resp, err := http.Get(baseURL + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "diffs_detected") {
+		t.Errorf("a meta-only change must not be counted as drift, got %s", body)
+	}
+	if updates := fetchUpdates(t, baseURL, apiKey); len(updates) != 0 {
+		t.Errorf("a meta-only change must not enqueue updates, got %+v", updates)
+	}
+}
+
+// TestApplyE2E_MetaOnlyChange_AppliedWithFlag verifies the opt-in: with
+// --apply-meta-only-changes the live meta converges.
+func TestApplyE2E_MetaOnlyChange_AppliedWithFlag(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	jobID := uniqueJobID("meta-only-apply")
+
+	registerJobHCL(t, testJobHCLModified(jobID))
+	waitForJobStatus(t, jobID, "running", 60*time.Second)
+	commitToGit(t, workDir, map[string]string{
+		jobID + ".hcl": testJobHCLWithPolicy(jobID, "full"),
+	})
+
+	startBotherer(t, applyArgs(repoURL, branch, jobID, "--apply-meta-only-changes")...)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		job, _, err := testNomadClient.Jobs().Info(jobID, &nomadapi.QueryOptions{})
+		if err == nil && job.Meta["gitops_managed"] == "true" {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Error("with --apply-meta-only-changes the live meta should converge to carry gitops_managed")
+}

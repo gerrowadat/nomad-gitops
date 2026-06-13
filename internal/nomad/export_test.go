@@ -25,8 +25,13 @@ func RedactedFieldsCounter(d *Differ) prometheus.Counter {
 func DrainUpdates(d *Differ) { d.drainUpdates() }
 
 // ClassifyDiff exposes the diff classifier for table-driven tests.
-func ClassifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool) DiffClass {
-	return classifyDiff(d, autoscaled)
+func ClassifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix string) DiffClass {
+	return classifyDiff(d, autoscaled, metaPrefix)
+}
+
+// MetaOnlyDiffs exposes the meta-only diff counter for metric assertions.
+func MetaOnlyDiffs(d *Differ) *prometheus.CounterVec {
+	return d.metaOnlyDiffs
 }
 
 // LastNomadIndex exposes the cached Raft index for skip-invalidation tests.

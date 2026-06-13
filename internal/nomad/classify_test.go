@@ -203,13 +203,83 @@ func TestClassifyDiff(t *testing.T) {
 			}),
 			want: nomad.DiffClassOther,
 		},
+		{
+			name: "managed meta only",
+			diff: metaObjectDiff(map[string]string{"gitops_managed": "true"}),
+			want: nomad.DiffClassManagedMetaOnly,
+		},
+		{
+			name: "managed meta only, wrapped field name",
+			diff: &nomadapi.JobDiff{
+				Type:   "Edited",
+				Fields: []*nomadapi.FieldDiff{{Type: "Added", Name: "Meta[gitops_update_policy]", New: "full"}},
+			},
+			want: nomad.DiffClassManagedMetaOnly,
+		},
+		{
+			name: "image plus managed meta is image-only",
+			diff: &nomadapi.JobDiff{
+				Type: "Edited", ID: "myapp",
+				Objects: []*nomadapi.ObjectDiff{
+					{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
+						{Type: "Added", Name: "gitops_managed", New: "true"},
+					}},
+				},
+				TaskGroups: []*nomadapi.TaskGroupDiff{
+					{Type: "Edited", Name: "web", Tasks: []*nomadapi.TaskDiff{taskDiffWithConfig(imageField())}},
+				},
+			},
+			want: nomad.DiffClassImageOnly,
+		},
+		{
+			name: "managed meta plus other is other",
+			diff: &nomadapi.JobDiff{
+				Type: "Edited", ID: "myapp",
+				Objects: []*nomadapi.ObjectDiff{
+					{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
+						{Type: "Added", Name: "gitops_managed", New: "true"},
+					}},
+				},
+				TaskGroups: []*nomadapi.TaskGroupDiff{
+					{Type: "Edited", Name: "web", Tasks: []*nomadapi.TaskDiff{
+						{Type: "Edited", Name: "app", Fields: []*nomadapi.FieldDiff{
+							{Type: "Edited", Name: "Env[FOO]", Old: "a", New: "b"},
+						}},
+					}},
+				},
+			},
+			want: nomad.DiffClassOther,
+		},
+		{
+			name: "user meta key is not managed-meta",
+			diff: metaObjectDiff(map[string]string{"version": "1.2.3"}),
+			want: nomad.DiffClassOther,
+		},
+		{
+			name: "managed meta mixed with user meta is other",
+			diff: metaObjectDiff(map[string]string{"gitops_managed": "true", "team": "infra"}),
+			want: nomad.DiffClassOther,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nomad.ClassifyDiff(tc.diff, tc.autoscaled); got != tc.want {
+			if got := nomad.ClassifyDiff(tc.diff, tc.autoscaled, "gitops"); got != tc.want {
 				t.Errorf("classifyDiff = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// metaObjectDiff builds a job-level Meta ObjectDiff with the given added keys.
+func metaObjectDiff(keys map[string]string) *nomadapi.JobDiff {
+	fields := make([]*nomadapi.FieldDiff, 0, len(keys))
+	for k, v := range keys {
+		fields = append(fields, &nomadapi.FieldDiff{Type: "Added", Name: k, New: v})
+	}
+	return &nomadapi.JobDiff{
+		Type:    "Edited",
+		ID:      "myapp",
+		Objects: []*nomadapi.ObjectDiff{{Type: "Edited", Name: "Meta", Fields: fields}},
 	}
 }

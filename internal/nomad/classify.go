@@ -15,10 +15,18 @@ const (
 	// Count/Scaling churn. Nothing to apply.
 	DiffClassNone DiffClass = iota
 	// DiffClassImageOnly means every Git-owned change is a Docker image
-	// reference (the "image" field inside a task's Config object).
+	// reference (the "image" field inside a task's Config object), possibly
+	// alongside nomad-botherer's own managed-meta keys.
 	DiffClassImageOnly
+	// DiffClassManagedMetaOnly means every Git-owned change is to one of
+	// nomad-botherer's own managed-prefix meta keys (e.g. gitops_managed,
+	// gitops_update_policy). These are not applied on their own by default:
+	// re-registering a running job purely to push our keys onto it is
+	// disruptive and unnecessary, since the HCL is already the source of
+	// truth for them. They ride along the next real update.
+	DiffClassManagedMetaOnly
 	// DiffClassOther means the diff contains at least one Git-owned change
-	// that is not an image reference.
+	// that is not an image reference or a managed-meta key.
 	DiffClassOther
 )
 
@@ -28,53 +36,60 @@ func (c DiffClass) String() string {
 		return "none"
 	case DiffClassImageOnly:
 		return "image-only"
+	case DiffClassManagedMetaOnly:
+		return "managed-meta-only"
 	default:
 		return "other"
 	}
 }
 
-// classifyDiff walks a plan diff and classifies it. autoscaledGroups names
-// the task groups that carry a scaling policy: changes to their Count field
-// and Scaling object are owned by the autoscaler, not by Git, and are
-// ignored for classification (per the "do not fight the autoscaler" design
-// rule). Container nodes (job/group/task marked Edited because a child
+// changeCounts tallies the changed leaves in a plan diff by kind.
+type changeCounts struct {
+	image       int
+	managedMeta int
+	other       int
+}
+
+// classifyDiff walks a plan diff and classifies it. autoscaled names the task
+// groups that carry a scaling policy: changes to their Count field and
+// Scaling object are owned by the autoscaler, not by Git, and are ignored
+// (per the "do not fight the autoscaler" design rule). metaPrefix is the
+// managed meta prefix (e.g. "gitops"); changes to keys under it are bucketed
+// separately. Container nodes (job/group/task marked Edited because a child
 // changed) are not leaves and do not affect the result.
-func classifyDiff(d *nomadapi.JobDiff, autoscaledGroups map[string]bool) DiffClass {
+func classifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix string) DiffClass {
 	if d == nil || d.Type == "" || d.Type == "None" {
 		return DiffClassNone
 	}
 
-	imageChanges := 0
-	otherChanges := 0
-
-	// Job-level fields and objects are never image references.
-	otherChanges += countChangedFields(d.Fields, nil)
-	otherChanges += countChangedObjectLeaves(d.Objects)
+	var c changeCounts
+	c.addFields(d.Fields, nil, false, false, metaPrefix)
+	c.addObjects(d.Objects, metaPrefix)
 
 	for _, tg := range d.TaskGroups {
 		if tg == nil {
 			continue
 		}
-		autoscaled := autoscaledGroups[tg.Name]
+		isAuto := autoscaled[tg.Name]
 
 		// Whole-group additions or removals are structural changes.
 		if tg.Type == "Added" || tg.Type == "Deleted" {
-			otherChanges++
+			c.other++
 		}
 
-		skipFields := map[string]bool{}
-		if autoscaled {
-			skipFields["Count"] = true
+		var skip map[string]bool
+		if isAuto {
+			skip = map[string]bool{"Count": true}
 		}
-		otherChanges += countChangedFields(tg.Fields, skipFields)
+		c.addFields(tg.Fields, skip, false, false, metaPrefix)
 		for _, o := range tg.Objects {
 			if o == nil {
 				continue
 			}
-			if autoscaled && o.Name == "Scaling" {
+			if isAuto && o.Name == "Scaling" {
 				continue
 			}
-			otherChanges += countChangedObjectLeaves([]*nomadapi.ObjectDiff{o})
+			c.addObject(o, metaPrefix)
 		}
 
 		for _, task := range tg.Tasks {
@@ -82,56 +97,53 @@ func classifyDiff(d *nomadapi.JobDiff, autoscaledGroups map[string]bool) DiffCla
 				continue
 			}
 			if task.Type == "Added" || task.Type == "Deleted" {
-				otherChanges++
+				c.other++
 			}
-			otherChanges += countChangedFields(task.Fields, nil)
+			c.addFields(task.Fields, nil, false, false, metaPrefix)
 			for _, o := range task.Objects {
 				if o == nil {
 					continue
 				}
-				if o.Name == "Config" {
-					img, other := splitConfigChanges(o)
-					imageChanges += img
-					otherChanges += other
-					continue
-				}
-				otherChanges += countChangedObjectLeaves([]*nomadapi.ObjectDiff{o})
+				c.addObject(o, metaPrefix)
 			}
 		}
 	}
 
 	switch {
-	case otherChanges > 0:
+	case c.other > 0:
 		return DiffClassOther
-	case imageChanges > 0:
+	case c.image > 0:
 		return DiffClassImageOnly
+	case c.managedMeta > 0:
+		return DiffClassManagedMetaOnly
 	default:
 		return DiffClassNone
 	}
 }
 
-// splitConfigChanges counts changed fields in a task's Config object,
-// separating the "image" field from everything else. Nested objects inside
-// Config (e.g. mounts, port maps) are never image references.
-func splitConfigChanges(cfg *nomadapi.ObjectDiff) (image, other int) {
-	for _, f := range cfg.Fields {
-		if f == nil || !fieldChanged(f.Type) {
-			continue
-		}
-		if strings.EqualFold(f.Name, "image") {
-			image++
-		} else {
-			other++
-		}
-	}
-	other += countChangedObjectLeaves(cfg.Objects)
-	return image, other
+// addObject counts the changed leaves under one object, aware of two special
+// objects: "Config" (whose "image" field is a Docker image reference) and
+// "Meta" (whose fields are meta keys, so managed-prefix ones are tracked
+// separately). Image/meta semantics do not propagate into nested sub-objects.
+func (c *changeCounts) addObject(o *nomadapi.ObjectDiff, metaPrefix string) {
+	c.addFields(o.Fields, nil, o.Name == "Meta", o.Name == "Config", metaPrefix)
+	c.addObjects(o.Objects, metaPrefix)
 }
 
-// countChangedFields counts fields with a changed type, skipping any whose
-// name is in skip.
-func countChangedFields(fields []*nomadapi.FieldDiff, skip map[string]bool) int {
-	n := 0
+func (c *changeCounts) addObjects(objs []*nomadapi.ObjectDiff, metaPrefix string) {
+	for _, o := range objs {
+		if o == nil {
+			continue
+		}
+		c.addObject(o, metaPrefix)
+	}
+}
+
+// addFields counts changed fields into the right bucket. inMeta marks fields
+// inside a Meta object (their names are bare meta keys); inConfig marks
+// fields inside a Config object (where "image" is the Docker image). skip
+// names fields to ignore entirely (autoscaler-owned Count).
+func (c *changeCounts) addFields(fields []*nomadapi.FieldDiff, skip map[string]bool, inMeta, inConfig bool, metaPrefix string) {
 	for _, f := range fields {
 		if f == nil || !fieldChanged(f.Type) {
 			continue
@@ -139,23 +151,32 @@ func countChangedFields(fields []*nomadapi.FieldDiff, skip map[string]bool) int 
 		if skip != nil && skip[f.Name] {
 			continue
 		}
-		n++
+		switch {
+		case inConfig && strings.EqualFold(f.Name, "image"):
+			c.image++
+		case isManagedMetaName(f.Name, inMeta, metaPrefix):
+			c.managedMeta++
+		default:
+			c.other++
+		}
 	}
-	return n
 }
 
-// countChangedObjectLeaves counts changed field leaves anywhere under the
-// given objects.
-func countChangedObjectLeaves(objs []*nomadapi.ObjectDiff) int {
-	n := 0
-	for _, o := range objs {
-		if o == nil {
-			continue
-		}
-		n += countChangedFields(o.Fields, nil)
-		n += countChangedObjectLeaves(o.Objects)
+// isManagedMetaName reports whether a changed field refers to one of
+// nomad-botherer's own meta keys. It accepts both a bare key name when the
+// field is inside a Meta object (inMeta) and the wrapped "Meta[key]" form
+// anywhere, so it is robust to how different Nomad versions render meta diffs.
+func isManagedMetaName(name string, inMeta bool, metaPrefix string) bool {
+	if metaPrefix == "" {
+		return false
 	}
-	return n
+	key := name
+	if strings.HasPrefix(name, "Meta[") && strings.HasSuffix(name, "]") {
+		key = name[len("Meta[") : len(name)-1]
+	} else if !inMeta {
+		return false
+	}
+	return strings.HasPrefix(key, metaPrefix+"_") || strings.HasPrefix(key, metaPrefix+".")
 }
 
 func fieldChanged(t string) bool {

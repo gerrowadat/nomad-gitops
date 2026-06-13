@@ -638,3 +638,55 @@ func TestLoadFromArgs_InvalidUpdatePolicyRejected(t *testing.T) {
 		t.Error("invalid update policy should be rejected at config load")
 	}
 }
+
+func TestLoadFromArgs_MetaOnlyFlagDefaults(t *testing.T) {
+	for _, k := range []string{"APPLY_META_ONLY_CHANGES", "COUNT_META_ONLY_CHANGES"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ApplyMetaOnlyChanges {
+		t.Error("ApplyMetaOnlyChanges should default to false")
+	}
+	if cfg.CountMetaOnlyChanges {
+		t.Error("CountMetaOnlyChanges should default to false")
+	}
+}
+
+func TestLoadFromArgs_MetaOnlyFlagsSet(t *testing.T) {
+	for _, k := range []string{"APPLY_META_ONLY_CHANGES", "COUNT_META_ONLY_CHANGES"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--apply-meta-only-changes",
+		"--count-meta-only-changes",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ApplyMetaOnlyChanges {
+		t.Error("ApplyMetaOnlyChanges: want true after flag")
+	}
+	if !cfg.CountMetaOnlyChanges {
+		t.Error("CountMetaOnlyChanges: want true after flag")
+	}
+}
+
+func TestLoadFromArgs_MetaOnlyFlagsEnv(t *testing.T) {
+	os.Setenv("APPLY_META_ONLY_CHANGES", "true")
+	os.Setenv("COUNT_META_ONLY_CHANGES", "1")
+	t.Cleanup(func() {
+		os.Unsetenv("APPLY_META_ONLY_CHANGES")
+		os.Unsetenv("COUNT_META_ONLY_CHANGES")
+	})
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ApplyMetaOnlyChanges || !cfg.CountMetaOnlyChanges {
+		t.Errorf("env vars not honoured: %+v", cfg)
+	}
+}

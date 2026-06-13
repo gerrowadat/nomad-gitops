@@ -109,6 +109,11 @@ type Differ struct {
 	// enableJobCreation gates first-time registration of jobs that exist in
 	// Git but not in Nomad. Off by default.
 	enableJobCreation bool
+	// applyMetaOnlyChanges allows a managed-meta-only diff to trigger an
+	// update on its own. countMetaOnlyChanges allows it to count as drift.
+	// Both off by default.
+	applyMetaOnlyChanges bool
+	countMetaOnlyChanges bool
 	// applyInterval is the fallback cadence of the applier loop; enqueues
 	// also wake it immediately via applyCh.
 	applyInterval time.Duration
@@ -152,6 +157,7 @@ type Differ struct {
 	pendingUpdates                 prometheus.Gauge
 	metaKeyIssues                  *prometheus.CounterVec
 	metaKeyChanges                 *prometheus.CounterVec
+	metaOnlyDiffs                  *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -173,9 +179,11 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		jobSelectorGlob:   cfg.JobSelectorGlob,
 		managedMetaPrefix: cfg.ManagedMetaPrefix,
 		redactSecrets:     cfg.RedactSecrets,
-		defaultPolicy:     defaultPolicy,
-		enableJobCreation: cfg.EnableJobCreation,
-		applyInterval:     applyInterval,
+		defaultPolicy:        defaultPolicy,
+		enableJobCreation:    cfg.EnableJobCreation,
+		applyMetaOnlyChanges: cfg.ApplyMetaOnlyChanges,
+		countMetaOnlyChanges: cfg.CountMetaOnlyChanges,
+		applyInterval:        applyInterval,
 		updateQueue:       NewUpdateQueue(),
 		applyCh:           make(chan struct{}, 1),
 		driftFirstSeen:    make(map[string]time.Time),
@@ -251,6 +259,10 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Name: "nomad_botherer_meta_key_changes_total",
 			Help: "Transitions of managed-prefix meta keys (added, removed, changed) noticed between check cycles, by source (hcl or nomad).",
 		}, []string{"job", "source"}),
+		metaOnlyDiffs: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_meta_only_diffs_total",
+			Help: "Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (see --count-meta-only-changes, --apply-meta-only-changes); they converge on the next real update.",
+		}, []string{"job"}),
 	}
 
 	// Pre-populate Vec metrics for all finite label values so they appear in
@@ -507,7 +519,7 @@ func (d *Differ) checkHCLCandidate(jobID string, entry hclEntry, q *nomadapi.Que
 		// Classify before redaction; classification reads only structure
 		// (names and change types), but doing it first keeps the order
 		// obviously safe.
-		class := classifyDiff(plan.Diff, autoscaledGroups(entry.job))
+		class := classifyDiff(plan.Diff, autoscaledGroups(entry.job), d.managedMetaPrefix)
 		// Redact before the diff is stored so potentially sensitive values
 		// never reach /diffs or any other consumer of the stored state.
 		if d.redactSecrets {
@@ -644,7 +656,18 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		selReasons[jobID] = mergeSelectionReason(selReasons[jobID], reason)
 		hclJobSet[jobID] = struct{}{}
 		if diff != nil {
-			diffs = append(diffs, *diff)
+			metaOnly := cand != nil && cand.class == DiffClassManagedMetaOnly
+			if metaOnly {
+				d.metaOnlyDiffs.WithLabelValues(jobID).Inc()
+			}
+			// A diff confined to our own meta keys is an expected,
+			// non-disruptive difference. By default it is not counted as
+			// drift (so it does not trigger alerts) — it is surfaced via its
+			// own counter and the meta-change logs instead, and converges on
+			// the next real update.
+			if !metaOnly || d.countMetaOnlyChanges {
+				diffs = append(diffs, *diff)
+			}
 		}
 		if cand != nil {
 			candidates = append(candidates, cand)
@@ -740,6 +763,16 @@ func (d *Differ) maybeEnqueueUpdate(c *updateCandidate, commit string, raftIndex
 	if c.class == DiffClassNone && !c.isCreation {
 		// Everything in the diff is autoscaler-owned Count/Scaling churn;
 		// Git has nothing to apply. The diff stays visible as an observation.
+		return false
+	}
+
+	if c.class == DiffClassManagedMetaOnly && !c.isCreation && !d.applyMetaOnlyChanges {
+		// A change confined to our own meta keys: leave the running job
+		// alone. Re-registering just to push gitops_* keys is disruptive and
+		// unnecessary — the HCL is already authoritative for them, and they
+		// converge on the next real update (registering from HCL carries them
+		// along, even under an image-only policy). Enable with
+		// --apply-meta-only-changes.
 		return false
 	}
 
