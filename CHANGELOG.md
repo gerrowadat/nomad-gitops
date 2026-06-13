@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- **Git is intent for meta-based job selection.** The `gitops_managed`
+  key in a job's HCL now selects the job even when the running job's meta
+  does not carry it; the missing live key is itself drift and converges
+  through the normal apply path (policy permitting). Opting a running job
+  in is now a single commit — previously, with the live job's meta as the
+  source of truth (v0.3.0 behaviour), adding the key in Git did nothing
+  until someone manually re-registered the job. The live job's key still
+  selects too (union), so already-managed jobs stay in scope.
+  `--managed-meta-hcl-canonical` now means: select by the HCL key *only*,
+  ignoring the live key.
+
 ### New features
 
 - **GitOps apply: nomad-botherer can now mutate jobs.** When drift is

@@ -122,7 +122,7 @@ func (d *Differ) metaChangeAction(jobID, source, key, oldV, newV string, hasNew 
 // managedTransitionAction explains the consequence of an opt-in change.
 func (d *Differ) managedTransitionAction(jobID, newV string, hasNew bool) string {
 	if hasNew && newV == "true" {
-		return "job is now opted in to GitOps management: it will be diffed against its HCL and applied per its effective update policy"
+		return "job is now opted in to GitOps management: it will be diffed against its HCL and applied per its effective update policy; if the live job does not carry the key yet, that difference is itself drift and converges the same way"
 	}
 	// Removed, "false", or an invalid value: the opt-in check no longer passes.
 	suffix := "nomad-botherer stops diffing it and will never register or deregister it"

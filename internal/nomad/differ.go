@@ -97,10 +97,10 @@ type Differ struct {
 	includeDeadJobs   bool
 	jobSelectorGlob   string
 	managedMetaPrefix string
-	// metaHCLCanonical controls whether the HCL file or the live Nomad job is
-	// the source of truth for managed-meta-prefix selection. When false (the
-	// default), the live job's meta is checked; the HCL meta is used as a
-	// fallback only when the job does not yet exist in Nomad.
+	// metaHCLCanonical narrows managed-meta-prefix selection to the HCL key
+	// only. By default (false) selection is the union: the HCL key wins when
+	// present (Git is intent), and the live job's key also selects so
+	// already-managed jobs stay in scope while their HCL catches up.
 	metaHCLCanonical bool
 	// redactSecrets replaces potentially sensitive plan-diff values (env vars,
 	// templates, secret-like keys) with RedactedValue before the diff is
@@ -435,10 +435,14 @@ func (d *Differ) checkHCLCandidate(jobID string, entry hclEntry, q *nomadapi.Que
 	nomadJob, _, infoErr := d.jobs.Info(jobID, q)
 	notFound := infoErr != nil && isNotFound(infoErr)
 
-	// When metaHCLCanonical is false (the default), the live job's meta is
-	// authoritative. For jobs not yet in Nomad, fall back to the HCL meta.
+	// Git is intent: the opt-in key in HCL selects the job even when the
+	// live copy does not carry it yet — the key's absence on the live job
+	// is itself drift, and applying it (policy permitting) is how the live
+	// meta converges. Without metaHCLCanonical the live job's key also
+	// selects (union), so already-managed jobs stay in scope; with it, only
+	// the HCL key counts.
 	metaSelected := entry.metaHCL
-	if !d.metaHCLCanonical && !notFound && infoErr == nil {
+	if !d.metaHCLCanonical && !metaSelected && !notFound && infoErr == nil {
 		metaSelected = nomadJob != nil && d.metaKeyPresent(nomadJob.Meta)
 	}
 

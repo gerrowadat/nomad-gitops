@@ -287,3 +287,43 @@ func fetchUpdates(t *testing.T, baseURL, apiKey string) []nomad.JobUpdate {
 	}
 	return out.Updates
 }
+
+// TestApplyE2E_OptInViaGitCommit_Converges is the git-is-intent scenario: a
+// job is already running with no gitops keys, and a commit adds
+// gitops_managed + an update policy to its HCL. No glob selection is
+// configured — the HCL meta key alone must select the job, the missing key
+// on the live job is drift, and applying converges the live meta too.
+func TestApplyE2E_OptInViaGitCommit_Converges(t *testing.T) {
+	repoURL, workDir, branch := createGitRepo(t)
+	jobID := uniqueJobID("optin-commit")
+
+	// Live job: no gitops keys at all.
+	registerJobHCL(t, testJobHCL(jobID))
+	waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+	// The commit opts the job in and declares policy full.
+	commitToGit(t, workDir, map[string]string{
+		jobID + ".hcl": testJobHCLWithPolicy(jobID, "full"),
+	})
+
+	// Deliberately no --job-selector-glob: meta-only selection.
+	startBotherer(t,
+		"--repo-url="+repoURL,
+		"--branch="+branch,
+		"--apply-interval=1s",
+	)
+
+	waitForTaskArgs(t, jobID, "999", 60*time.Second)
+
+	// The live job's meta must have converged to carry the keys.
+	job, _, err := testNomadClient.Jobs().Info(jobID, &nomadapi.QueryOptions{})
+	if err != nil {
+		t.Fatalf("Info after convergence: %v", err)
+	}
+	if job.Meta["gitops_managed"] != "true" {
+		t.Errorf("live job should now carry gitops_managed=true, got %v", job.Meta)
+	}
+	if job.Meta["gitops_update_policy"] != "full" {
+		t.Errorf("live job should now carry the policy key, got %v", job.Meta)
+	}
+}
