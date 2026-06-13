@@ -1,6 +1,6 @@
 # Proposal: per-job update policies
 
-**Status**: draft  
+**Status**: implemented (register path, in-memory queue) — see CHANGELOG  
 **Date**: 2026-06-11
 
 ## Background
@@ -47,16 +47,17 @@ policy, which is a config flag:
 
 | Flag | Env var | Default |
 |---|---|---|
-| `--default-update-policy` | `DEFAULT_UPDATE_POLICY` | `full` |
+| `--default-update-policy` | `DEFAULT_UPDATE_POLICY` | `none` |
 
-The default is `full` because `gitops_managed = "true"` already expresses
-the intent to be managed; the policy key *restricts* that. Deployments that
-want to enrol jobs gradually can set `--default-update-policy=none` and
-promote jobs one at a time by adding explicit policy keys.
-
-The conservative gate lives at the deployment level, not the job level: a
-global apply mode flag (see the job updates proposal) defaults to off, so no
-policy value causes a write until the operator turns applying on.
+This proposal originally argued for a default of `full` guarded by a
+separate global apply-mode switch. **As implemented, the default is `none`
+and there is no separate switch**: the policy flag itself is the
+deployment-level gate. Out of the box nothing is ever written; raising the
+default or adding a per-job meta key is the explicit act that enables
+applying. A job whose meta declares `full` or `image-only` is applied even
+while the default is `none` — the meta key overrides in both directions.
+Deployments enrol jobs gradually by promoting them one at a time with
+explicit policy keys.
 
 ---
 

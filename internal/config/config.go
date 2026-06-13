@@ -35,10 +35,17 @@ type Config struct {
 	IncludeDeadJobs bool
 	RedactSecrets   bool
 
-	// Job selection
-	JobSelectorGlob          string
-	ManagedMetaPrefix        string
-	ManagedMetaHCLCanonical  bool
+	// Apply (GitOps mutation)
+	DefaultUpdatePolicy string
+	EnableJobCreation   bool
+	ApplyInterval       time.Duration
+
+	// Job selection. Git is always the source of truth for nomad-botherer's
+	// own meta keys: when a job has an HCL file in the repo, that file alone
+	// decides selection and policy. There is deliberately no flag to invert
+	// this.
+	JobSelectorGlob   string
+	ManagedMetaPrefix string
 
 	// Staleness
 	MaxGitStaleness   time.Duration
@@ -79,9 +86,11 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.DurationVar(&c.DiffInterval, "diff-interval", envDurationOrDefault("DIFF_INTERVAL", time.Minute), "How often to run a diff check regardless of git changes")
 	fs.BoolVar(&c.IncludeDeadJobs, "include-dead-jobs", envBoolOrDefault("INCLUDE_DEAD_JOBS", false), "Treat dead Nomad jobs like running ones (by default dead jobs are treated as missing)")
 	fs.BoolVar(&c.RedactSecrets, "redact-secrets", envBoolOrDefault("REDACT_SECRETS", true), "Redact potentially sensitive plan-diff values (env vars, template bodies, fields with secret-like names) before storing and rendering diffs")
+	fs.StringVar(&c.DefaultUpdatePolicy, "default-update-policy", envOrDefault("DEFAULT_UPDATE_POLICY", "none"), "Update policy for managed jobs without an explicit <prefix>_update_policy meta key: none (detect only), image-only (apply drift confined to Docker image fields), full (apply any drift)")
+	fs.BoolVar(&c.EnableJobCreation, "enable-job-creation", envBoolOrDefault("ENABLE_JOB_CREATION", false), "Allow registering jobs that exist in Git but not in Nomad (first-time registration). Off by default; requires an effective update policy of full for the job.")
+	fs.DurationVar(&c.ApplyInterval, "apply-interval", envDurationOrDefault("APPLY_INTERVAL", 10*time.Second), "Fallback cadence of the apply loop; enqueued updates are also applied immediately")
 	fs.StringVar(&c.JobSelectorGlob, "job-selector-glob", envOrDefault("JOB_SELECTOR_GLOB", ""), "Glob pattern selecting jobs by name (e.g. 'myprefix-*', '*' for all). Jobs matching either this or --managed-meta-prefix are watched. Empty means no glob selection.")
-	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-botherer (e.g. 'gitops' means 'gitops_managed = true' opts a job in). Empty disables meta-based selection.")
-	fs.BoolVar(&c.ManagedMetaHCLCanonical, "managed-meta-hcl-canonical", envBoolOrDefault("MANAGED_META_HCL_CANONICAL", false), "Use the HCL file as the source of truth for managed-meta-prefix selection. By default the live Nomad job's meta is checked; enable this to select jobs based on the meta key in HCL even if the running job does not carry it.")
+	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-botherer (e.g. 'gitops' means 'gitops_managed = true' in a job's HCL opts it in). Git is always the source of truth for these keys: when a job has an HCL file, the live job's keys are ignored for selection. Empty disables meta-based selection.")
 	fs.DurationVar(&c.MaxGitStaleness, "max-git-staleness", envDurationOrDefault("MAX_GIT_STALENESS", 0), "Maximum time since last successful git fetch before forcing a refresh (0 disables)")
 	fs.DurationVar(&c.MaxNomadStaleness, "max-nomad-staleness", envDurationOrDefault("MAX_NOMAD_STALENESS", 0), "Maximum time since last successful Nomad diff check before forcing a refresh (0 disables)")
 
@@ -98,6 +107,12 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	// A git token over plain HTTP is sent in cleartext to the remote.
 	if c.GitToken != "" && strings.HasPrefix(strings.ToLower(c.RepoURL), "http://") {
 		return nil, fmt.Errorf("--git-token / GIT_TOKEN cannot be used with a plain http:// repo URL: the token would be sent in cleartext; use https:// or SSH instead")
+	}
+
+	switch c.DefaultUpdatePolicy {
+	case "none", "image-only", "full":
+	default:
+		return nil, fmt.Errorf("--default-update-policy / DEFAULT_UPDATE_POLICY must be one of none, image-only, full; got %q", c.DefaultUpdatePolicy)
 	}
 
 	return c, nil

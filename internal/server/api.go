@@ -31,6 +31,10 @@ type selectedJobsResponse struct {
 	LastCommit    string              `json:"last_commit,omitempty"`
 }
 
+type updatesResponse struct {
+	Updates []nomad.JobUpdate `json:"updates"`
+}
+
 type statusResponse struct {
 	LastCommit  string `json:"last_commit,omitempty"`
 	LastUpdated string `json:"last_updated,omitempty"`
@@ -117,6 +121,14 @@ func (s *Server) handleAPISelectedJobs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleAPIUpdates(w http.ResponseWriter, r *http.Request) {
+	updates := s.diffs.Updates()
+	if updates == nil {
+		updates = []nomad.JobUpdate{}
+	}
+	writeJSON(w, http.StatusOK, updatesResponse{Updates: updates})
+}
+
 func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.git.Ready() {
 		apiNotReady(w)
@@ -197,6 +209,29 @@ const openAPISpec = `{
           "last_commit":     {"type": "string"}
         }
       },
+      "JobUpdate": {
+        "type": "object",
+        "properties": {
+          "update_id":              {"type": "string", "description": "<job_id>/<git_commit_short>; stable across restarts"},
+          "job_id":                 {"type": "string"},
+          "hcl_file":               {"type": "string"},
+          "git_commit":             {"type": "string"},
+          "operation":              {"type": "string", "enum": ["REGISTER", "DEREGISTER"]},
+          "status":                 {"type": "string", "enum": ["PENDING", "IN_PROGRESS", "SUCCEEDED", "FAILED", "SUPERSEDED"]},
+          "policy":                 {"type": "string", "enum": ["full", "image-only", "none"]},
+          "nomad_job_modify_index": {"type": "integer", "description": "CAS token captured at detection time; 0 = job did not exist"},
+          "nomad_raft_index":       {"type": "integer"},
+          "detected_at":            {"type": "string", "format": "date-time"},
+          "applied_at":             {"type": "string", "format": "date-time"},
+          "error":                  {"type": "string"}
+        }
+      },
+      "UpdatesResponse": {
+        "type": "object",
+        "properties": {
+          "updates": {"type": "array", "items": {"$ref": "#/components/schemas/JobUpdate"}}
+        }
+      },
       "StatusResponse": {
         "type": "object",
         "properties": {
@@ -256,6 +291,16 @@ const openAPISpec = `{
           "200": {"description": "Selected jobs", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SelectedJobsResponse"}}}},
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/updates": {
+      "get": {
+        "summary": "GitOps update queue",
+        "description": "Returns the queue of intended job changes derived from detected drift: pending, in-progress, and recently completed updates.",
+        "responses": {
+          "200": {"description": "Update queue", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdatesResponse"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"}
         }
       }
     },

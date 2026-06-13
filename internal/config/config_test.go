@@ -460,38 +460,16 @@ func TestLoadFromArgs_JobSelectorGlobEnv(t *testing.T) {
 	}
 }
 
-func TestLoadFromArgs_ManagedMetaHCLCanonicalDefault(t *testing.T) {
-	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.ManagedMetaHCLCanonical {
-		t.Error("ManagedMetaHCLCanonical: want false (Nomad-canonical by default), got true")
-	}
-}
-
-func TestLoadFromArgs_ManagedMetaHCLCanonicalFlag(t *testing.T) {
-	cfg, err := LoadFromArgs(newFS(), []string{
+// TestLoadFromArgs_HCLCanonicalFlagRemoved pins the deliberate removal of
+// --managed-meta-hcl-canonical: Git is always the source of truth for
+// nomad-botherer's own meta keys, and there is no flag to invert that.
+func TestLoadFromArgs_HCLCanonicalFlagRemoved(t *testing.T) {
+	_, err := LoadFromArgs(newFS(), []string{
 		"--repo-url", "https://example.com/r.git",
 		"--managed-meta-hcl-canonical",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.ManagedMetaHCLCanonical {
-		t.Error("ManagedMetaHCLCanonical: want true after --managed-meta-hcl-canonical flag, got false")
-	}
-}
-
-func TestLoadFromArgs_ManagedMetaHCLCanonicalEnv(t *testing.T) {
-	os.Setenv("MANAGED_META_HCL_CANONICAL", "true")
-	t.Cleanup(func() { os.Unsetenv("MANAGED_META_HCL_CANONICAL") })
-	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.ManagedMetaHCLCanonical {
-		t.Error("ManagedMetaHCLCanonical: want true from env var, got false")
+	if err == nil {
+		t.Error("--managed-meta-hcl-canonical should no longer exist")
 	}
 }
 
@@ -589,5 +567,74 @@ func TestLoadFromArgs_UnknownFlagRejected(t *testing.T) {
 	_, err := LoadFromArgs(newFS(), []string{"--no-such-flag"})
 	if err == nil {
 		t.Error("unknown flag should produce a parse error")
+	}
+}
+
+func TestLoadFromArgs_ApplyFlagDefaults(t *testing.T) {
+	for _, k := range []string{"DEFAULT_UPDATE_POLICY", "ENABLE_JOB_CREATION", "APPLY_INTERVAL"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DefaultUpdatePolicy != "none" {
+		t.Errorf("DefaultUpdatePolicy default: want none, got %q", cfg.DefaultUpdatePolicy)
+	}
+	if cfg.EnableJobCreation {
+		t.Error("EnableJobCreation should default to false")
+	}
+	if cfg.ApplyInterval != 10*time.Second {
+		t.Errorf("ApplyInterval default: want 10s, got %v", cfg.ApplyInterval)
+	}
+}
+
+func TestLoadFromArgs_ApplyFlagsSet(t *testing.T) {
+	for _, k := range []string{"DEFAULT_UPDATE_POLICY", "ENABLE_JOB_CREATION", "APPLY_INTERVAL"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--default-update-policy", "image-only",
+		"--enable-job-creation",
+		"--apply-interval", "30s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DefaultUpdatePolicy != "image-only" {
+		t.Errorf("DefaultUpdatePolicy: want image-only, got %q", cfg.DefaultUpdatePolicy)
+	}
+	if !cfg.EnableJobCreation {
+		t.Error("EnableJobCreation: want true")
+	}
+	if cfg.ApplyInterval != 30*time.Second {
+		t.Errorf("ApplyInterval: want 30s, got %v", cfg.ApplyInterval)
+	}
+}
+
+func TestLoadFromArgs_ApplyFlagEnvVars(t *testing.T) {
+	os.Setenv("DEFAULT_UPDATE_POLICY", "full")
+	os.Setenv("ENABLE_JOB_CREATION", "true")
+	os.Setenv("APPLY_INTERVAL", "1m")
+	t.Cleanup(func() {
+		for _, k := range []string{"DEFAULT_UPDATE_POLICY", "ENABLE_JOB_CREATION", "APPLY_INTERVAL"} {
+			os.Unsetenv(k)
+		}
+	})
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DefaultUpdatePolicy != "full" || !cfg.EnableJobCreation || cfg.ApplyInterval != time.Minute {
+		t.Errorf("env vars not honoured: %+v", cfg)
+	}
+}
+
+func TestLoadFromArgs_InvalidUpdatePolicyRejected(t *testing.T) {
+	os.Unsetenv("DEFAULT_UPDATE_POLICY")
+	_, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git", "--default-update-policy", "everything"})
+	if err == nil {
+		t.Error("invalid update policy should be rejected at config load")
 	}
 }

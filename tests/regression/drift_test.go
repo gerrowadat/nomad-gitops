@@ -212,17 +212,24 @@ func TestDrift_RaftIndexSkip(t *testing.T) {
 	hclFiles := map[string]string{jobID + ".hcl": testJobHCL(jobID)}
 	commit := "commit-stable"
 
-	if err := d.Check(hclFiles, commit); err != nil {
-		t.Fatalf("first Check: %v", err)
+	// Background cluster activity (evals and GC from earlier tests) can
+	// advance the global Raft index between two Check calls, defeating the
+	// skip legitimately. Retry the pair until a quiet window is hit.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := d.Check(hclFiles, commit); err != nil {
+			t.Fatalf("first Check: %v", err)
+		}
+		if err := d.Check(hclFiles, commit); err != nil {
+			t.Fatalf("second Check: %v", err)
+		}
+		if gatherCounter(t, reg, "nomad_botherer_diff_checks_skipped_total") >= 1 {
+			return
+		}
+		time.Sleep(time.Second)
 	}
-	if err := d.Check(hclFiles, commit); err != nil {
-		t.Fatalf("second Check: %v", err)
-	}
-
-	skipped := gatherCounter(t, reg, "nomad_botherer_diff_checks_skipped_total")
-	if skipped < 1 {
-		t.Errorf("want ≥1 skipped check after identical commit+index, got %v", skipped)
-	}
+	t.Errorf("no skipped check observed after identical commit+index within 30s; got %v",
+		gatherCounter(t, reg, "nomad_botherer_diff_checks_skipped_total"))
 }
 
 // TestDrift_CommitChange verifies that changing the commit hash (with the same

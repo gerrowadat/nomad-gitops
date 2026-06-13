@@ -154,6 +154,11 @@ func main() {
 	// Watcher polls git and triggers onChange on new commits.
 	go watcher.Run(ctx)
 
+	// Applier drains the GitOps update queue. With the default
+	// --default-update-policy=none nothing is ever enqueued, so this loop
+	// idles unless jobs opt in via meta or the default policy is raised.
+	go differ.RunApplier(ctx)
+
 	srv := server.New(cfg, differ, watcher, server.BuildInfo{
 		Version:   version,
 		Commit:    commit,

@@ -260,10 +260,14 @@ job "api-server" {
 }
 ```
 
-nomad-botherer behaviour with this flag:
+nomad-botherer behaviour with this flag (as implemented, Git is always the
+source of truth: when a job has an HCL file, the HCL key alone decides
+selection in both directions; the live key only matters for jobs without an
+HCL file):
 
-- Include a job in the diff scope if and only if its HCL file or its live
-  `Jobs.Info()` response contains `meta["gitops_managed"] == "true"`.
+- Include a job in the diff scope if its HCL file contains
+  `meta["gitops_managed"] == "true"`, or — for jobs with no HCL file at
+  all — if its live `Jobs.Info()` response does.
 - Store checkpoint state in Nomad Variables (Alternative 1). Never write back
   to the job's `meta` stanza.
 - A live job that does not have `gitops_managed` is never flagged as

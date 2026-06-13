@@ -26,6 +26,8 @@ import (
 type DiffSource interface {
 	Diffs() ([]nomad.JobDiff, time.Time, string)
 	SelectedJobs() ([]nomad.SelectedJob, time.Time, string)
+	// Updates returns a snapshot of the GitOps update queue.
+	Updates() []nomad.JobUpdate
 	// Ready reports whether at least one diff check has completed.
 	Ready() bool
 }
@@ -118,6 +120,7 @@ func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, 
 		apiMux := http.NewServeMux()
 		apiMux.HandleFunc("GET /api/v1/diffs", s.handleAPIDiffs)
 		apiMux.HandleFunc("GET /api/v1/selected-jobs", s.handleAPISelectedJobs)
+		apiMux.HandleFunc("GET /api/v1/updates", s.handleAPIUpdates)
 		apiMux.HandleFunc("GET /api/v1/status", s.handleAPIStatus)
 		apiMux.HandleFunc("GET /api/v1/version", s.handleAPIVersion)
 		apiMux.HandleFunc("POST /api/v1/refresh", s.handleAPIRefresh)
@@ -221,6 +224,11 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
   {{- if .ManagedMetaKey}}
   <p><small>To include a job, add <code>meta { &#34;{{.ManagedMetaKey}}&#34; = &#34;true&#34; }</code> to its HCL definition.</small></p>
   {{- end}}
+  <p>Apply mode: default policy <code>{{.DefaultPolicy}}</code>
+    {{- if eq .DefaultPolicy "none"}} (detection only unless a job&#39;s meta opts in){{end}},
+    job creation {{if .JobCreationEnabled}}<span class="bad">enabled</span>{{else}}disabled{{end}}
+    {{- if .PendingUpdates}}, <span class="starting">{{.PendingUpdates}} update(s) pending</span>{{end}}
+  </p>
   {{- if .LastCheck}}
   <p>Last diff check: {{.LastCheck}}{{if .Commit}} (commit <code>{{.Commit}}</code>){{end}}</p>
   {{- end}}
@@ -278,25 +286,42 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		managedMetaKey = s.cfg.ManagedMetaPrefix + "_managed"
 	}
 
+	pendingUpdates := 0
+	for _, u := range s.diffs.Updates() {
+		if u.Status == nomad.JobUpdateStatusPending || u.Status == nomad.JobUpdateStatusInProgress {
+			pendingUpdates++
+		}
+	}
+	defaultPolicy := s.cfg.DefaultUpdatePolicy
+	if defaultPolicy == "" {
+		defaultPolicy = "none"
+	}
+
 	data := struct {
-		Version         string
-		Starting        bool
-		DiffCount       int
-		SelectedJobs    []nomad.SelectedJob
-		LastCheck       string
-		Commit          string
-		LastWebhookOK   string
-		LastWebhookFail string
-		SelectionGlob   string
-		ManagedMetaKey  string
+		Version            string
+		Starting           bool
+		DiffCount          int
+		SelectedJobs       []nomad.SelectedJob
+		LastCheck          string
+		Commit             string
+		LastWebhookOK      string
+		LastWebhookFail    string
+		SelectionGlob      string
+		ManagedMetaKey     string
+		DefaultPolicy      string
+		JobCreationEnabled bool
+		PendingUpdates     int
 	}{
-		Version:        s.buildInfo.Version,
-		Starting:       starting,
-		DiffCount:      len(diffs),
-		SelectedJobs:   selectedJobs,
-		Commit:         commit,
-		SelectionGlob:  s.cfg.JobSelectorGlob,
-		ManagedMetaKey: managedMetaKey,
+		Version:            s.buildInfo.Version,
+		Starting:           starting,
+		DiffCount:          len(diffs),
+		SelectedJobs:       selectedJobs,
+		Commit:             commit,
+		SelectionGlob:      s.cfg.JobSelectorGlob,
+		ManagedMetaKey:     managedMetaKey,
+		DefaultPolicy:      defaultPolicy,
+		JobCreationEnabled: s.cfg.EnableJobCreation,
+		PendingUpdates:     pendingUpdates,
 	}
 	if !lastCheck.IsZero() {
 		data.LastCheck = lastCheck.Format(time.RFC3339)

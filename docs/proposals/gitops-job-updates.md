@@ -1,6 +1,6 @@
 # Proposal: GitOps job updates
 
-**Status**: draft  
+**Status**: implemented (register path, in-memory queue) — see CHANGELOG  
 **Date**: 2026-05-13  
 **Updated**: 2026-06-11
 

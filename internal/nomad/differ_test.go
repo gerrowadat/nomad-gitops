@@ -21,6 +21,7 @@ type mockJobsClient struct {
 	planFn     func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error)
 	infoFn     func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error)
 	listFn     func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error)
+	registerFn func(job *nomadapi.Job, opts *nomadapi.RegisterOptions, q *nomadapi.WriteOptions) (*nomadapi.JobRegisterResponse, *nomadapi.WriteMeta, error)
 }
 
 func (m *mockJobsClient) ParseHCL(jobHCL string, normalize bool) (*nomadapi.Job, error) {
@@ -34,6 +35,12 @@ func (m *mockJobsClient) Info(jobID string, q *nomadapi.QueryOptions) (*nomadapi
 }
 func (m *mockJobsClient) List(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
 	return m.listFn(q)
+}
+func (m *mockJobsClient) RegisterOpts(job *nomadapi.Job, opts *nomadapi.RegisterOptions, q *nomadapi.WriteOptions) (*nomadapi.JobRegisterResponse, *nomadapi.WriteMeta, error) {
+	if m.registerFn == nil {
+		return &nomadapi.JobRegisterResponse{}, nil, nil
+	}
+	return m.registerFn(job, opts, q)
 }
 
 // defaultMock returns a client where everything succeeds with no diffs.
@@ -1187,10 +1194,12 @@ func TestDiffer_SelectedJobs_NoDuplicates(t *testing.T) {
 	}
 }
 
-// TestDiffer_NomadCanonical_MetaInHCLNotNomad verifies the default behaviour:
-// a job whose HCL carries the managed meta key but whose live Nomad instance
-// does NOT is not selected (Nomad is the source of truth).
-func TestDiffer_NomadCanonical_MetaInHCLNotNomad(t *testing.T) {
+// TestDiffer_GitIsIntent_MetaInHCLNotNomad verifies the default behaviour:
+// a job whose HCL carries the managed meta key is selected even when the
+// live Nomad instance does NOT carry it. Git is intent — the missing key on
+// the live job is itself drift (the plan shows the meta addition), which is
+// how opting a running job in via a commit converges.
+func TestDiffer_GitIsIntent_MetaInHCLNotNomad(t *testing.T) {
 	mock := defaultMock()
 	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
 		return &nomadapi.Job{ID: strPtr("not-yet-managed"), Meta: map[string]string{"gitops_managed": "true"}}, nil
@@ -1200,48 +1209,82 @@ func TestDiffer_NomadCanonical_MetaInHCLNotNomad(t *testing.T) {
 		s := "running"
 		return &nomadapi.Job{ID: strPtr("not-yet-managed"), Status: &s, Meta: nil}, nil, nil
 	}
+	// The plan reports the meta addition as drift.
+	mock.planFn = func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error) {
+		return &nomadapi.JobPlanResponse{Diff: &nomadapi.JobDiff{
+			Type: "Edited",
+			Objects: []*nomadapi.ObjectDiff{
+				{Type: "Edited", Name: "Meta", Fields: []*nomadapi.FieldDiff{
+					{Type: "Added", Name: "Meta[gitops_managed]", New: "true"},
+				}},
+			},
+		}}, nil, nil
+	}
 	d := newTestDifferWithSelection(mock, "", "gitops")
 
 	if err := d.Check(map[string]string{"not-yet-managed.hcl": `job "not-yet-managed" {}`}, "abc"); err != nil {
 		t.Fatal(err)
 	}
-	diffs, _, _ := d.Diffs()
-	if len(diffs) != 0 {
-		t.Errorf("want 0 diffs: job meta key not present in live Nomad job, got %+v", diffs)
-	}
 	jobs, _, _ := d.SelectedJobs()
-	if len(jobs) != 0 {
-		t.Errorf("want 0 selected jobs, got %+v", jobs)
+	if len(jobs) != 1 || jobs[0].JobID != "not-yet-managed" {
+		t.Fatalf("HCL opt-in key should select the job even without the live key, got %+v", jobs)
+	}
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 1 || diffs[0].DiffType != nomad.DiffTypeModified {
+		t.Errorf("the missing live key should surface as a modified diff, got %+v", diffs)
 	}
 }
 
-// TestDiffer_NomadCanonical_MetaInNomadNotHCL verifies that a live Nomad job
-// carrying the managed key is selected even if the HCL file does not declare
-// the key (Nomad is the source of truth, and missing-from-hcl is detected via
-// the Nomad list phase).
-func TestDiffer_NomadCanonical_MetaInNomadNotHCL(t *testing.T) {
+// TestDiffer_GitIsIntent_LiveKeyNeverOverridesHCL verifies that when a job's
+// HCL exists in the repo without the managed key, a stale key on the live
+// job does not select it: Git is always the source of truth for
+// nomad-botherer's own keys. The job is neither diffed nor reported as
+// missing_from_hcl.
+func TestDiffer_GitIsIntent_LiveKeyNeverOverridesHCL(t *testing.T) {
 	mock := defaultMock()
-	// HCL job has no meta key.
+	// HCL job has no meta key: Git says "not managed".
 	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
-		return &nomadapi.Job{ID: strPtr("managed-job"), Meta: nil}, nil
+		return &nomadapi.Job{ID: strPtr("formerly-managed"), Meta: nil}, nil
 	}
-	// Live Nomad list shows the job with the meta key.
+	// Live Nomad list shows the job with a stale meta key.
 	mock.listFn = func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
 		return []*nomadapi.JobListStub{
-			{ID: "managed-job", Status: "running", Meta: map[string]string{"gitops_managed": "true"}},
+			{ID: "formerly-managed", Status: "running", Meta: map[string]string{"gitops_managed": "true"}},
 		}, nil, nil
 	}
 	d := newTestDifferWithSelection(mock, "", "gitops")
 
-	// Pass the HCL file — but the HCL job has no meta, so it is not a candidate.
-	if err := d.Check(map[string]string{"managed-job.hcl": `job "managed-job" {}`}, "abc"); err != nil {
+	if err := d.Check(map[string]string{"formerly-managed.hcl": `job "formerly-managed" {}`}, "abc"); err != nil {
 		t.Fatal(err)
 	}
-	// The Nomad list phase selects the job; it has no HCL (from the differ's
-	// perspective, since the HCL candidate was dropped), so missing_from_hcl.
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 0 {
+		t.Errorf("a stale live key must not produce diffs when the HCL opts out, got %+v", diffs)
+	}
+	jobs, _, _ := d.SelectedJobs()
+	if len(jobs) != 0 {
+		t.Errorf("a stale live key must not select the job, got %+v", jobs)
+	}
+}
+
+// TestDiffer_LiveKeySelects_WhenNoHCLExists verifies that for a job Git
+// knows nothing about (no HCL file at all), the live key still selects it —
+// that is how missing_from_hcl is detected.
+func TestDiffer_LiveKeySelects_WhenNoHCLExists(t *testing.T) {
+	mock := defaultMock()
+	mock.listFn = func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error) {
+		return []*nomadapi.JobListStub{
+			{ID: "orphan-job", Status: "running", Meta: map[string]string{"gitops_managed": "true"}},
+		}, nil, nil
+	}
+	d := newTestDifferWithSelection(mock, "", "gitops")
+
+	if err := d.Check(map[string]string{}, "abc"); err != nil {
+		t.Fatal(err)
+	}
 	diffs, _, _ := d.Diffs()
 	if len(diffs) != 1 || diffs[0].DiffType != nomad.DiffTypeMissingFromHCL {
-		t.Errorf("want 1 missing_from_hcl diff, got %+v", diffs)
+		t.Errorf("want 1 missing_from_hcl diff for a live-only managed job, got %+v", diffs)
 	}
 }
 
@@ -1264,37 +1307,6 @@ func TestDiffer_NomadCanonical_MissingFromNomad_HCLFallback(t *testing.T) {
 	diffs, _, _ := d.Diffs()
 	if len(diffs) != 1 || diffs[0].DiffType != nomad.DiffTypeMissingFromNomad {
 		t.Errorf("want 1 missing_from_nomad diff (HCL fallback for new job), got %+v", diffs)
-	}
-}
-
-// TestDiffer_HCLCanonical_MetaInHCLNotNomad verifies that with
-// ManagedMetaHCLCanonical=true the HCL meta key is sufficient for selection
-// even when the live Nomad job does not carry it.
-func TestDiffer_HCLCanonical_MetaInHCLNotNomad(t *testing.T) {
-	mock := defaultMock()
-	mock.parseHCLFn = func(jobHCL string, normalize bool) (*nomadapi.Job, error) {
-		return &nomadapi.Job{ID: strPtr("hcl-managed"), Meta: map[string]string{"gitops_managed": "true"}}, nil
-	}
-	// Live job exists but has no meta key.
-	mock.infoFn = func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error) {
-		s := "running"
-		return &nomadapi.Job{ID: strPtr("hcl-managed"), Status: &s, Meta: nil}, nil, nil
-	}
-	mock.planFn = func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error) {
-		return &nomadapi.JobPlanResponse{}, nil, nil
-	}
-	cfg := &config.Config{
-		ManagedMetaPrefix:       "gitops",
-		ManagedMetaHCLCanonical: true,
-	}
-	d := nomad.NewWithClient(cfg, mock)
-
-	if err := d.Check(map[string]string{"hcl-managed.hcl": `job "hcl-managed" {}`}, "abc"); err != nil {
-		t.Fatal(err)
-	}
-	jobs, _, _ := d.SelectedJobs()
-	if len(jobs) != 1 || jobs[0].JobID != "hcl-managed" {
-		t.Errorf("want 1 selected job (hcl-canonical), got %+v", jobs)
 	}
 }
 

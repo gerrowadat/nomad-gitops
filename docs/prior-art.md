@@ -153,8 +153,9 @@ but the change must land in the repo before it lands in Nomad.
 
 ## What nomad-botherer does differently today
 
-nomad-botherer currently only detects drift; it does not apply changes. The
-detection side addresses several of the problems above:
+nomad-botherer detects drift always and applies it only where per-job update
+policies and deployment flags allow (the default is detection-only). Both
+sides address the problems above:
 
 **Incremental change detection.** The git watcher stores HEAD between cycles.
 If HEAD has not advanced since the last check, no per-job work is triggered from
@@ -173,7 +174,16 @@ observable without log scraping.
 
 **No persistent storage.** State is entirely in-memory. There is no database,
 no local disk requirement. The tradeoff is that a restart re-derives all state
-from the next diff cycle, which is acceptable for a read-only observer.
+(including the update queue) from the next diff cycle. This is safe for the
+apply side too: CAS plus re-planning make a re-detected apply idempotent.
+
+**The apply side avoids the specific mistakes above.** Unlike
+nomad-gitops-operator, it never registers without a plan showing a real diff,
+and every register uses `EnforceIndex` with the `JobModifyIndex` captured at
+detection. Unlike nomad-ops, autoscaler-owned `Count`/`Scaling` changes
+neither trigger nor block updates, and registers on autoscaled jobs use
+`PreserveCounts`. Per-job `gitops_update_policy` meta (`full` / `image-only` /
+`none`) bounds how much automation each job gets.
 
 **Staleness guards.** `--max-git-staleness` and `--max-nomad-staleness` can
 force refreshes if the normal polling path falls behind, independently of the

@@ -511,7 +511,8 @@ func (m *mockDiffSource) Diffs() ([]nomad.JobDiff, time.Time, string) {
 func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string) {
 	return nil, time.Now(), "deadbeef"
 }
-func (m *mockDiffSource) Ready() bool { return m.ready }
+func (m *mockDiffSource) Updates() []nomad.JobUpdate { return nil }
+func (m *mockDiffSource) Ready() bool                { return m.ready }
 
 type mockGitSource struct {
 	ready     bool

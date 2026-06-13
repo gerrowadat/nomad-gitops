@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **Git is always the source of truth for nomad-botherer's own behaviour,
+  and `--managed-meta-hcl-canonical` / `MANAGED_META_HCL_CANONICAL` is
+  removed** (passing the flag is now a startup error). When a job has an
+  HCL file in the repo, that file alone decides selection and update
+  policy, in both directions:
+  - `gitops_managed = "true"` in HCL selects the job even when the running
+    job's meta does not carry it; the missing live key is itself drift and
+    converges through the normal apply path (policy permitting). Opting a
+    running job in is a single commit — previously (v0.3.0 behaviour,
+    where live meta was the source of truth) adding the key in Git did
+    nothing until someone manually re-registered the job.
+  - A stale `gitops_managed` key on a live job whose HCL does *not* carry
+    it never selects the job. Previously the live key kept such jobs
+    selected and they were misreported as `missing_from_hcl`.
+
+  Live meta only drives behaviour for jobs Git knows nothing about
+  (`missing_from_hcl` detection). Live-side key changes on jobs with HCL
+  are still noticed, logged, and counted — they just never change
+  behaviour.
+
+### New features
+
+- **GitOps apply: nomad-botherer can now mutate jobs.** When drift is
+  detected for a managed job, it can re-register the job from its HCL —
+  implementing the async-queue design from
+  `docs/proposals/gitops-job-updates.md` and the policy model from
+  `docs/proposals/update-policies.md`. Everything defaults to
+  detection-only:
+  - Per-job update policies: `none` (default), `image-only` (apply only
+    when the entire plan diff is Docker image fields), `full`. Set the
+    default with `--default-update-policy` / `DEFAULT_UPDATE_POLICY`;
+    override per job with the `gitops_update_policy` meta key in HCL.
+  - First-time registration of jobs missing from Nomad is additionally
+    gated on `--enable-job-creation` / `ENABLE_JOB_CREATION` (default off)
+    and requires policy `full`.
+  - Every write is plan-first and CAS-protected (`EnforceIndex` with the
+    `JobModifyIndex` captured at detection); conflicts mark the update
+    `FAILED` and the next cycle re-detects. Autoscaled groups register
+    with `PreserveCounts`, and autoscaler-owned Count/Scaling churn never
+    triggers an update.
+  - Updates flow through an in-memory queue drained by a separate apply
+    loop (`--apply-interval` fallback cadence); newer commits supersede
+    pending updates for the same job. The queue is visible at
+    `GET /api/v1/updates` and in four new metrics
+    (`nomad_botherer_job_updates_total`, `..._job_updates_pending`,
+    `..._updates_blocked_by_policy_total`,
+    `..._updates_blocked_creation_disabled_total`).
+  - Deregistration (`missing_from_hcl`) remains observation-only.
+  - The web console index shows the apply mode (default policy, job
+    creation flag, pending update count), and the regression suite gains
+    end-to-end apply scenarios against a real cluster, including the
+    negative test that the defaults never write.
+  - Meta keys under the managed prefix that nomad-botherer cannot act on
+    are flagged: unknown keys (typos like `gitops_managd` or
+    `gitops.managed`) log at WARN, recognised keys with unusable values
+    (`gitops_managed = "True"`) log at ERROR. Logged once per unique
+    issue; counted every cycle in
+    `nomad_botherer_meta_key_issues_total{job,issue}`.
+  - Changes to managed-prefix meta keys are noticed and logged with their
+    behavioural consequence: opting a job in or out of management,
+    switching update policy (including falling back to the default when
+    the key is removed), and live jobs losing keys to a manual
+    `nomad job run`. Logged at INFO with old/new values and what the tool
+    does to honour the change; counted in
+    `nomad_botherer_meta_key_changes_total{job,source}`. The first check
+    after startup is a silent baseline.
+
 ### Changed
 
 - **Test coverage raised from 78% to 88% of statements.** `internal/config`
