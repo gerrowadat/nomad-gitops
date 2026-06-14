@@ -22,6 +22,7 @@ After a successful run, add a row to the table below and update `tests/regressio
 
 | nomad-botherer | Nomad 1.9.x | Nomad 1.10.x | Nomad 1.11.x | Nomad 2.0.x | Notes |
 |----------------|:-----------:|:------------:|:------------:|:-----------:|-------|
+| v0.6.0         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    | Full apply suite (policies, pre-existing drift, apply_action) |
 | v0.4.0         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    |       |
 | v0.1.2         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    |       |
 

@@ -1,6 +1,51 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-06-14
+
+Refinements to the GitOps apply side introduced in v0.5.0. All defaults stay
+conservative (detection-only).
+
+### New features
+
+- **Changes confined to nomad-botherer's own meta keys are not, on their
+  own, drift.** When a commit adds or changes only a `gitops_*` key on a
+  running job, that diff is neither applied nor counted as drift by default:
+  re-registering a job purely to stamp our keys onto it is disruptive and
+  needless, since the HCL is already authoritative for them. The keys
+  converge opportunistically on the next real update (an image bump under
+  `image-only` carries them along). Two new flags control this independently:
+  `--apply-meta-only-changes` / `APPLY_META_ONLY_CHANGES` (default off) and
+  `--count-meta-only-changes` / `COUNT_META_ONLY_CHANGES` (default off).
+  Surfaced by the new `nomad_botherer_meta_only_diffs_total{job}` counter and
+  the meta-change logs. A diff mixing a meta change with any other change is
+  unaffected.
+- **Drift that pre-existed a job entering scope is not applied by default.**
+  When the managed tag is added to a job that already differs from its HCL
+  (e.g. an image bumped in Git before the tag), that drift is not
+  retroactively applied — only changes committed after opt-in are.
+  `--apply-existing-drift` / `APPLY_EXISTING_DRIFT` (default off) applies it
+  instead. The decision is derived from git history (was the tag present in
+  the commit before HEAD for the job's file?), so it holds identically
+  whether the tag was added while running or before startup — a restart never
+  freezes an already-managed cluster. A file created with the tag in one
+  commit is not a retroactive opt-in and applies. Glob-selected jobs have no
+  opt-in moment and are unaffected. Counted in
+  `nomad_botherer_updates_blocked_preexisting_total{job}`.
+- **Every diff carries an `apply_action` explaining whether and why it will
+  (not) be applied** — `queued`, `blocked_by_policy`,
+  `blocked_preexisting_drift`, `blocked_creation_disabled`,
+  `skipped_meta_only`, `observation_only`, or `no_actionable_change`. Shown on
+  `/diffs`, in the `/api/v1/diffs` and `/healthz` JSON, and in the OpenAPI
+  spec.
+
+### Fixed
+
+- **Update-queue race on re-enqueue of an in-flight update.** Re-enqueuing an
+  update with the same ID while it was `IN_PROGRESS` mutated the in-flight
+  update's fields, which the applier reads without holding the queue lock.
+  In-progress updates are now left strictly untouched.
+
+## v0.5.0 — 2026-06-13
 
 ### Breaking changes
 
@@ -52,40 +97,6 @@
     `..._updates_blocked_by_policy_total`,
     `..._updates_blocked_creation_disabled_total`).
   - Deregistration (`missing_from_hcl`) remains observation-only.
-  - **Changes confined to nomad-botherer's own meta keys are not, on their
-    own, drift.** When a commit adds or changes only a `gitops_*` key on a
-    running job, that diff is neither applied nor counted as drift by
-    default: re-registering a job purely to stamp our keys onto it is
-    disruptive and needless, since the HCL is already authoritative for
-    them. The keys converge opportunistically on the next real update
-    (an image bump under `image-only` carries them along). Two new flags
-    control this independently: `--apply-meta-only-changes` /
-    `APPLY_META_ONLY_CHANGES` (default off) and `--count-meta-only-changes`
-    / `COUNT_META_ONLY_CHANGES` (default off). Surfaced by the new
-    `nomad_botherer_meta_only_diffs_total{job}` counter and the meta-change
-    logs. A diff mixing a meta change with any other change is unaffected.
-  - Fixed a race in the update queue (flagged in review): re-enqueuing an
-    update with the same ID while it was IN_PROGRESS mutated the in-flight
-    update's fields, which the applier reads without the queue lock.
-    In-progress updates are now left strictly untouched.
-  - **Drift that pre-existed a job entering scope is not applied by
-    default.** When the managed tag is added to a job that already differs
-    from its HCL (e.g. an image bumped in Git before the tag), that drift is
-    not retroactively applied — only changes committed after opt-in are.
-    `--apply-existing-drift` / `APPLY_EXISTING_DRIFT` (default off) applies it
-    instead. The decision is derived from git history (was the tag present in
-    the commit before HEAD for the job's file?), so it holds identically
-    whether the tag was added while running or before startup — a restart
-    never freezes an already-managed cluster. A file created with the tag in
-    one commit is not a retroactive opt-in and applies. Glob-selected jobs
-    have no opt-in moment and are unaffected. Counted in
-    `nomad_botherer_updates_blocked_preexisting_total{job}`.
-  - **Every diff carries an `apply_action` explaining whether and why it
-    will (not) be applied** — `queued`, `blocked_by_policy`,
-    `blocked_preexisting_drift`, `blocked_creation_disabled`,
-    `skipped_meta_only`, `observation_only`, or `no_actionable_change`.
-    Shown on `/diffs`, in the `/api/v1/diffs` and `/healthz` JSON, and in the
-    OpenAPI spec.
   - The web console index shows the apply mode (default policy, job
     creation flag, pending update count), and the regression suite gains
     end-to-end apply scenarios against a real cluster, including the
