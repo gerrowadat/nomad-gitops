@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **Deregistration of jobs removed from the repo, and clear logging when a
+  job leaves GitOps management.** A managed job leaves scope two ways, both
+  logged: the `gitops_managed` tag is removed (job still in the repo — it is
+  left running, never deregistered, logged via the meta-change tracker), or
+  the job is removed from the repo entirely (file deleted or renamed). The
+  latter is surfaced as `missing_from_hcl` and, by default, left running
+  (`observation_only`). `--enable-deregister` / `ENABLE_DEREGISTER` (default
+  off) deregisters it, but only when the live job carries
+  `gitops_managed=true`, its effective policy is `full`, and it has been
+  continuously orphaned for `--deregister-grace` / `DEREGISTER_GRACE`
+  (default `5m`); live state is re-checked immediately before the call.
+  Deregistration is a graceful stop by default; `--deregister-purge` /
+  `DEREGISTER_PURGE` purges. New `apply_action` values `queued_deregister`
+  and `deregister_pending_grace`; new counter
+  `nomad_botherer_jobs_left_management_total{job,reason}`; `DEREGISTER`
+  appears in `nomad_botherer_job_updates_total`.
+
 ## v0.6.0 — 2026-06-14
 
 Refinements to the GitOps apply side introduced in v0.5.0. All defaults stay

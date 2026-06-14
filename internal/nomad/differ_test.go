@@ -18,11 +18,12 @@ func strPtr(s string) *string { return &s }
 
 // mockJobsClient lets individual test cases override only the methods they care about.
 type mockJobsClient struct {
-	parseHCLFn func(jobHCL string, normalize bool) (*nomadapi.Job, error)
-	planFn     func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error)
-	infoFn     func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error)
-	listFn     func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error)
-	registerFn func(job *nomadapi.Job, opts *nomadapi.RegisterOptions, q *nomadapi.WriteOptions) (*nomadapi.JobRegisterResponse, *nomadapi.WriteMeta, error)
+	parseHCLFn   func(jobHCL string, normalize bool) (*nomadapi.Job, error)
+	planFn       func(job *nomadapi.Job, diff bool, q *nomadapi.WriteOptions) (*nomadapi.JobPlanResponse, *nomadapi.WriteMeta, error)
+	infoFn       func(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error)
+	listFn       func(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error)
+	registerFn   func(job *nomadapi.Job, opts *nomadapi.RegisterOptions, q *nomadapi.WriteOptions) (*nomadapi.JobRegisterResponse, *nomadapi.WriteMeta, error)
+	deregisterFn func(jobID string, purge bool, q *nomadapi.WriteOptions) (string, *nomadapi.WriteMeta, error)
 }
 
 func (m *mockJobsClient) ParseHCL(jobHCL string, normalize bool) (*nomadapi.Job, error) {
@@ -42,6 +43,12 @@ func (m *mockJobsClient) RegisterOpts(job *nomadapi.Job, opts *nomadapi.Register
 		return &nomadapi.JobRegisterResponse{}, nil, nil
 	}
 	return m.registerFn(job, opts, q)
+}
+func (m *mockJobsClient) Deregister(jobID string, purge bool, q *nomadapi.WriteOptions) (string, *nomadapi.WriteMeta, error) {
+	if m.deregisterFn == nil {
+		return "", nil, nil
+	}
+	return m.deregisterFn(jobID, purge, q)
 }
 
 // defaultMock returns a client where everything succeeds with no diffs.

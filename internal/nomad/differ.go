@@ -91,9 +91,15 @@ const (
 	ApplyActionCreationBlocked ApplyAction = "blocked_creation_disabled"
 	// ApplyActionMetaOnly means the diff is confined to our own meta keys.
 	ApplyActionMetaOnly ApplyAction = "skipped_meta_only"
-	// ApplyActionDeregister means the job is missing from HCL; deregistration
-	// is not implemented, so it is observation-only.
-	ApplyActionDeregister ApplyAction = "observation_only"
+	// ApplyActionObservationOnly means a job is running in Nomad with no HCL,
+	// and deregistration is disabled (or the job is not deregister-eligible):
+	// it is left running, observation-only.
+	ApplyActionObservationOnly ApplyAction = "observation_only"
+	// ApplyActionDeregisterQueued means an orphaned job will be deregistered.
+	ApplyActionDeregisterQueued ApplyAction = "queued_deregister"
+	// ApplyActionDeregisterGrace means an orphaned job is deregister-eligible
+	// but its grace period has not yet elapsed.
+	ApplyActionDeregisterGrace ApplyAction = "deregister_pending_grace"
 	// ApplyActionNoChange means the only diff is autoscaler-owned churn.
 	ApplyActionNoChange ApplyAction = "no_actionable_change"
 )
@@ -111,8 +117,12 @@ func (a ApplyAction) Describe() string {
 		return "not applied: job creation disabled (set --enable-job-creation)"
 	case ApplyActionMetaOnly:
 		return "not applied: change is confined to managed meta keys"
-	case ApplyActionDeregister:
-		return "not applied: deregistration is not implemented"
+	case ApplyActionObservationOnly:
+		return "not applied: running but absent from the repo; left untouched (set --enable-deregister to remove)"
+	case ApplyActionDeregisterQueued:
+		return "queued for deregistration (removed from the repo)"
+	case ApplyActionDeregisterGrace:
+		return "will deregister after the grace period (removed from the repo)"
 	case ApplyActionNoChange:
 		return "no actionable change (autoscaler-owned)"
 	default:
@@ -151,6 +161,7 @@ type NomadJobsClient interface {
 	Info(jobID string, q *nomadapi.QueryOptions) (*nomadapi.Job, *nomadapi.QueryMeta, error)
 	List(q *nomadapi.QueryOptions) ([]*nomadapi.JobListStub, *nomadapi.QueryMeta, error)
 	RegisterOpts(job *nomadapi.Job, opts *nomadapi.RegisterOptions, q *nomadapi.WriteOptions) (*nomadapi.JobRegisterResponse, *nomadapi.WriteMeta, error)
+	Deregister(jobID string, purge bool, q *nomadapi.WriteOptions) (string, *nomadapi.WriteMeta, error)
 }
 
 // Differ runs periodic diff checks and stores the latest results.
@@ -180,6 +191,12 @@ type Differ struct {
 	// applyExistingDrift allows drift that pre-existed a job's scope entry
 	// (the managed tag added in the HEAD commit) to be applied. Off by default.
 	applyExistingDrift bool
+	// Deregistration of jobs removed from the repo. enableDeregister gates it;
+	// deregisterPurge selects purge vs graceful stop; deregisterGrace is how
+	// long a job must stay orphaned first. All off/conservative by default.
+	enableDeregister bool
+	deregisterPurge  bool
+	deregisterGrace  time.Duration
 	// history answers whether the managed tag was present before HEAD, used to
 	// detect pre-existing drift. nil disables the check.
 	history HistorySource
@@ -198,10 +215,12 @@ type Differ struct {
 	metaIssuesLogged sync.Map
 
 	// prevMeta holds the previous cycle's prefix-key snapshots per
-	// (source, job), used to notice and log meta-key transitions. Protected
-	// by metaMu.
-	metaMu   sync.Mutex
-	prevMeta map[string]metaState
+	// (source, job), used to notice and log meta-key transitions. prevManaged
+	// is the set of job IDs actively managed via HCL last cycle, used to log
+	// a job leaving GitOps management exactly once. Both protected by metaMu.
+	metaMu      sync.Mutex
+	prevMeta    map[string]metaState
+	prevManaged map[string]bool
 
 	mu             sync.RWMutex
 	diffs          []JobDiff
@@ -232,6 +251,7 @@ type Differ struct {
 	metaKeyChanges                 *prometheus.CounterVec
 	metaOnlyDiffs                  *prometheus.CounterVec
 	updatesBlockedExistingDrift    *prometheus.CounterVec
+	jobsLeftManagement             *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -265,6 +285,9 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		applyMetaOnlyChanges: cfg.ApplyMetaOnlyChanges,
 		countMetaOnlyChanges: cfg.CountMetaOnlyChanges,
 		applyExistingDrift:   cfg.ApplyExistingDrift,
+		enableDeregister:     cfg.EnableDeregister,
+		deregisterPurge:      cfg.DeregisterPurge,
+		deregisterGrace:      cfg.DeregisterGrace,
 		managedKeyRe:         managedKeyRe,
 		applyInterval:        applyInterval,
 		updateQueue:       NewUpdateQueue(),
@@ -350,6 +373,10 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Name: "nomad_botherer_updates_blocked_preexisting_total",
 			Help: "Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable with --apply-existing-drift.",
 		}, []string{"job"}),
+		jobsLeftManagement: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_jobs_left_management_total",
+			Help: "Managed jobs that left GitOps management, by reason: tag_removed (gitops_managed dropped from HCL) or removed_from_repo (HCL file deleted or job renamed). Logged once per transition.",
+		}, []string{"job", "reason"}),
 	}
 
 	// Pre-populate Vec metrics for all finite label values so they appear in
@@ -357,11 +384,12 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	for _, src := range []string{"hcl", "nomad"} {
 		d.jobsSkippedBySel.WithLabelValues(src)
 	}
-	for _, op := range []string{"list", "info", "plan", "register"} {
+	for _, op := range []string{"list", "info", "plan", "register", "deregister"} {
 		d.nomadAPIErrors.WithLabelValues(op)
 	}
 	for _, st := range []JobUpdateStatus{JobUpdateStatusSucceeded, JobUpdateStatusFailed, JobUpdateStatusSuperseded} {
 		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationRegister), string(st))
+		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationDeregister), string(st))
 	}
 	for _, dt := range []string{string(DiffTypeModified), string(DiffTypeMissingFromNomad), string(DiffTypeMissingFromHCL)} {
 		d.driftedJobs.WithLabelValues(dt)
@@ -511,9 +539,11 @@ type updateCandidate struct {
 	job         *nomadapi.Job
 	modifyIndex uint64
 	class       DiffClass
-	isCreation  bool        // job absent (or dead) in Nomad: first-time registration
-	globSel     bool        // selected by job-selector-glob (no opt-in moment)
-	action      ApplyAction // disposition, decided in decideApplyAction
+	isCreation  bool               // job absent (or dead) in Nomad: first-time registration
+	globSel     bool               // selected by job-selector-glob (no opt-in moment)
+	operation   JobUpdateOperation // REGISTER (default) or DEREGISTER
+	policy      UpdatePolicy       // effective policy, for DEREGISTER candidates (from live meta)
+	action      ApplyAction        // disposition, decided in decideApplyAction
 }
 
 // jobModifyIndex safely extracts a job's ModifyIndex.
@@ -807,17 +837,38 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		}
 		selReasons[j.ID] = mergeSelectionReason(selReasons[j.ID], reason)
 		if _, ok := hclJobSet[j.ID]; !ok {
-			diffs = append(diffs, JobDiff{
+			diff := JobDiff{
 				JobID:       j.ID,
 				DiffType:    DiffTypeMissingFromHCL,
 				Detail:      fmt.Sprintf("job is running in Nomad (status: %s) but has no HCL definition in the repo", j.Status),
-				ApplyAction: ApplyActionDeregister,
-			})
+				ApplyAction: ApplyActionObservationOnly,
+			}
+			// A job carrying our tag in its live meta with no HCL declaring it
+			// is an orphan — removed from the repo (file deleted or renamed),
+			// since tag-removal-with-file-present is excluded by the parsedIDs
+			// skip above. Such a job is a deregister candidate. A glob-only
+			// orphan (no tag) is never deregistered; it stays observation-only.
+			if d.metaKeyPresent(j.Meta) {
+				cand := &updateCandidate{
+					jobID:     j.ID,
+					operation: JobUpdateOperationDeregister,
+					policy:    d.effectivePolicy(j.Meta),
+				}
+				cand.action = d.decideDeregisterAction(cand)
+				diff.ApplyAction = cand.action
+				candidates = append(candidates, cand)
+			}
+			diffs = append(diffs, diff)
 		}
 	}
 
 	d.commitResults(diffs, selReasons, commit, listMeta, time.Now())
 	d.logMetaChanges(metaSeen)
+	liveJobs := make(map[string]string, len(allJobs))
+	for _, j := range allJobs {
+		liveJobs[j.ID] = j.Status
+	}
+	d.logScopeExits(hclJobSet, parsedIDs, liveJobs)
 
 	var raftIndex uint64
 	if listMeta != nil {
@@ -825,7 +876,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 	}
 	enqueued := 0
 	for _, cand := range candidates {
-		if cand.action == ApplyActionQueued {
+		if cand.action == ApplyActionQueued || cand.action == ApplyActionDeregisterQueued {
 			d.enqueueUpdate(cand, commit, raftIndex)
 			enqueued++
 		}
@@ -891,6 +942,76 @@ func (d *Differ) isPreExistingDrift(c *updateCandidate, commit string) bool {
 	return !d.managedKeyRe.MatchString(parent)
 }
 
+// logScopeExits logs, once per transition, when a job leaves active GitOps
+// management. managed is this cycle's HCL-managed set, parsedIDs the jobs
+// present in the repo at all, and liveJobs maps job ID to Nomad status. A job
+// that was managed last cycle and is not now either had its tag removed (still
+// in the repo — already reported by the meta-change log) or was removed from
+// the repo entirely (file deleted or job renamed). prevManaged is nil on the
+// first cycle, so a restart logs nothing.
+func (d *Differ) logScopeExits(managed, parsedIDs map[string]struct{}, liveJobs map[string]string) {
+	d.metaMu.Lock()
+	defer d.metaMu.Unlock()
+
+	if d.prevManaged != nil {
+		for jobID := range d.prevManaged {
+			if _, still := managed[jobID]; still {
+				continue
+			}
+			if _, inRepo := parsedIDs[jobID]; inRepo {
+				// Tag removed but the job is still in the repo: the meta-change
+				// log already carries the human message; just count it.
+				d.jobsLeftManagement.WithLabelValues(jobID, "tag_removed").Inc()
+				continue
+			}
+			d.jobsLeftManagement.WithLabelValues(jobID, "removed_from_repo").Inc()
+			if status, running := liveJobs[jobID]; running {
+				slog.Info("Job left GitOps management: removed from the repo (file deleted or job renamed); the running job is left untouched",
+					"job", jobID, "nomad_status", status, "deregister_enabled", d.enableDeregister)
+			} else {
+				slog.Info("Job left GitOps management: removed from the repo and no longer present in Nomad",
+					"job", jobID)
+			}
+		}
+	}
+
+	next := make(map[string]bool, len(managed))
+	for jobID := range managed {
+		next[jobID] = true
+	}
+	d.prevManaged = next
+}
+
+// decideDeregisterAction decides what to do with an orphaned managed job (a
+// tagged live job removed from the repo). Gated, most-conservative first:
+// deregistration must be enabled, the job's effective policy must be full, and
+// it must have been orphaned for the grace period. Anything short of that
+// leaves the job running (observation, policy-blocked, or grace-pending).
+func (d *Differ) decideDeregisterAction(c *updateCandidate) ApplyAction {
+	if !d.enableDeregister {
+		return ApplyActionObservationOnly
+	}
+	if c.policy != UpdatePolicyFull {
+		d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(c.policy)).Inc()
+		return ApplyActionPolicyBlocked
+	}
+	if !d.orphanGraceElapsed(c.jobID) {
+		return ApplyActionDeregisterGrace
+	}
+	return ApplyActionDeregisterQueued
+}
+
+// orphanGraceElapsed reports whether a job has been continuously orphaned
+// (missing_from_hcl) for at least the configured grace period. It reads the
+// first-seen time recorded by the previous cycle's commitResults; a job
+// orphaned for the first time this cycle has no entry yet and is not eligible.
+func (d *Differ) orphanGraceElapsed(jobID string) bool {
+	d.mu.RLock()
+	t, ok := d.driftFirstSeen[driftKey(jobID, string(DiffTypeMissingFromHCL))]
+	d.mu.RUnlock()
+	return ok && time.Since(t) >= d.deregisterGrace
+}
+
 // decideApplyAction determines a candidate's disposition and records the
 // reason via metrics/logs. It does not enqueue anything; the caller enqueues
 // when the action is ApplyActionQueued. The gates are ordered most-conservative
@@ -945,28 +1066,38 @@ func (d *Differ) decideApplyAction(c *updateCandidate, commit string) ApplyActio
 	return ApplyActionQueued
 }
 
-// enqueueUpdate places an approved candidate's update on the queue.
+// enqueueUpdate places an approved candidate's update on the queue. A
+// DEREGISTER candidate carries no parsed job (the job is removed by ID); a
+// REGISTER candidate carries the HCL job to write.
 func (d *Differ) enqueueUpdate(c *updateCandidate, commit string, raftIndex uint64) {
-	policy := d.effectivePolicy(c.job.Meta)
-	superseded := d.updateQueue.Enqueue(JobUpdate{
-		UpdateID:            updateID(c.jobID, commit),
-		JobID:               c.jobID,
-		HCLFile:             c.hclFile,
-		GitCommit:           commit,
-		Operation:           JobUpdateOperationRegister,
-		Status:              JobUpdateStatusPending,
-		Policy:              policy,
-		NomadJobModifyIndex: c.modifyIndex,
-		NomadRaftIndex:      raftIndex,
-		DetectedAt:          time.Now().UTC().Format(time.RFC3339),
-		job:                 c.job,
-		preserveCounts:      len(autoscaledGroups(c.job)) > 0,
-	})
+	op := c.operation
+	if op == "" {
+		op = JobUpdateOperationRegister
+	}
+	u := JobUpdate{
+		UpdateID:       updateID(c.jobID, commit),
+		JobID:          c.jobID,
+		HCLFile:        c.hclFile,
+		GitCommit:      commit,
+		Operation:      op,
+		Status:         JobUpdateStatusPending,
+		NomadRaftIndex: raftIndex,
+		DetectedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if op == JobUpdateOperationRegister {
+		u.Policy = d.effectivePolicy(c.job.Meta)
+		u.NomadJobModifyIndex = c.modifyIndex
+		u.job = c.job
+		u.preserveCounts = len(autoscaledGroups(c.job)) > 0
+	} else {
+		u.Policy = c.policy
+	}
+	superseded := d.updateQueue.Enqueue(u)
 	if superseded > 0 {
-		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationRegister), string(JobUpdateStatusSuperseded)).Add(float64(superseded))
+		d.jobUpdatesTotal.WithLabelValues(string(op), string(JobUpdateStatusSuperseded)).Add(float64(superseded))
 	}
 	d.pendingUpdates.Set(float64(d.updateQueue.PendingCount()))
-	slog.Info("Enqueued job update", "job", c.jobID, "update_id", updateID(c.jobID, commit), "policy", policy, "creation", c.isCreation)
+	slog.Info("Enqueued job update", "job", c.jobID, "update_id", u.UpdateID, "operation", op, "policy", u.Policy)
 }
 
 // ForceCheck runs a diff check unconditionally because the Nomad state has

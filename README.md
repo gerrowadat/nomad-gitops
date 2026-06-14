@@ -330,6 +330,9 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--apply-meta-only-changes` | `APPLY_META_ONLY_CHANGES` | `false` | Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. `gitops_managed`). Off by default — re-registering a running job just to push these keys is disruptive and unnecessary; they ride along the next real update. |
 | `--count-meta-only-changes` | `COUNT_META_ONLY_CHANGES` | `false` | Count a managed-meta-only diff as drift (surface it on `/diffs`, `/healthz`, and the drift metrics). Off by default so these expected differences do not trigger alerts. |
 | `--apply-existing-drift` | `APPLY_EXISTING_DRIFT` | `false` | When a job gains the managed meta tag while nomad-botherer is running, apply drift that already existed at that moment. Off by default — opting a job in does not retroactively mutate it; only changes committed after opt-in apply. Jobs already managed at startup reconcile normally. |
+| `--enable-deregister` | `ENABLE_DEREGISTER` | `false` | Deregister jobs removed from the repo entirely (HCL file deleted or job renamed) while still running. Off by default. Only acts on a live job carrying `gitops_managed=true` whose effective policy is `full`, and only after it has been orphaned for `--deregister-grace`. Removing only the tag (job still in the repo) never deregisters. See [Deregistration](#deregistration-jobs-removed-from-the-repo). |
+| `--deregister-purge` | `DEREGISTER_PURGE` | `false` | Purge the job from Nomad's state immediately instead of a graceful stop (queryable, GC'd later). |
+| `--deregister-grace` | `DEREGISTER_GRACE` | `5m` | How long a job must be continuously orphaned before being deregistered. Absorbs transient renames and mid-edit commits. |
 | `--job-selector-glob` | `JOB_SELECTOR_GLOB` | *(empty — no glob)* | Glob pattern selecting jobs to watch by name (e.g. `myprefix-*`, `*` for all). Combined with `--managed-meta-prefix` as a union. |
 | `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-botherer. With prefix `gitops`, the key `gitops_managed = "true"` opts a job in. Empty disables meta-based selection. |
 | `--max-git-staleness` | `MAX_GIT_STALENESS` | `0` (disabled) | If the git repo has not been successfully fetched within this window, force an immediate fetch. Set to `0` to disable. E.g. `--max-git-staleness=30m` |
@@ -471,7 +474,7 @@ and each held diff is shown on `/diffs` and the API with its reason (see
 |---|---|
 | `modified` | Re-register the job from HCL — if the policy allows the change. |
 | `missing_from_nomad` | Register the job for the first time — only with `--enable-job-creation` *and* an effective policy of `full` (a first registration is never an image-only change). Dead jobs count as missing here. |
-| `missing_from_hcl` | Never applied. Deregistration is deliberately not implemented; it stays an observation. |
+| `missing_from_hcl` | Left running and observation-only by default. With `--enable-deregister`, a job that was *removed from the repo entirely* (file deleted or renamed) is deregistered — see [Deregistration](#deregistration-jobs-removed-from-the-repo). |
 
 Every apply is conservative by construction:
 
@@ -501,6 +504,40 @@ policy that allowed it, and the CAS token used.
 The design background is in `docs/proposals/gitops-job-updates.md` and
 `docs/proposals/update-policies.md`.
 
+### Deregistration (jobs removed from the repo)
+
+nomad-botherer does not look after jobs *going away* by default — a job either
+enters its purview and stays in it, or stops being GitOps-managed and is left
+running. There are two ways a managed job leaves scope, both logged:
+
+- **The `gitops_managed` tag is removed** (the job is still declared in the
+  repo). The job stops being managed and is **left running, untouched** —
+  removing one line should never delete a job whose full spec is still in Git.
+  This is logged via the meta-change tracking and is never a deregistration.
+- **The job is removed from the repo entirely** — its HCL file is deleted, or
+  the job is renamed (so the old ID no longer appears in any HCL). The
+  still-running old job is surfaced as a `missing_from_hcl` diff and logged as
+  having left management.
+
+By default the removed-from-repo job is also just left running
+(`observation_only`). `--enable-deregister` turns on actually deregistering it,
+but only under all of these guards:
+
+- The live job carries `gitops_managed = "true"` (it was genuinely under
+  management; a job that merely matched `--job-selector-glob` is never
+  deregistered).
+- Its effective update policy (read from the live job's meta) is `full`.
+- It has been continuously orphaned for `--deregister-grace` (default `5m`),
+  which absorbs transient renames and mid-edit commits.
+- Immediately before deregistering, live state is re-checked: the job must
+  still exist and still carry the tag, or the deregistration is abandoned
+  ("recheck, don't remember").
+
+Deregistration is a **graceful stop** by default (the job becomes `dead` but
+stays queryable and is garbage-collected by Nomad later); `--deregister-purge`
+removes it from Nomad's state immediately. Jobs leaving management are counted
+in `nomad_botherer_jobs_left_management_total{job,reason}`.
+
 ### Why a diff is or is not applied
 
 Every diff carries an `apply_action` describing what nomad-botherer will do
@@ -516,7 +553,9 @@ documented in the OpenAPI spec. Values:
 | `blocked_preexisting_drift` | The drift pre-dates the job's opt-in; set `--apply-existing-drift` to apply. |
 | `blocked_creation_disabled` | First-time registration needs `--enable-job-creation`. |
 | `skipped_meta_only` | The change is confined to `gitops_*` meta keys (only shown when `--count-meta-only-changes` is on). |
-| `observation_only` | `missing_from_hcl`; deregistration is not implemented. |
+| `observation_only` | `missing_from_hcl`: running but absent from the repo, left untouched (deregistration disabled, or the job is not deregister-eligible). |
+| `queued_deregister` | The job was removed from the repo and will be deregistered. |
+| `deregister_pending_grace` | Removed from the repo; deregistration is waiting out `--deregister-grace`. |
 | `no_actionable_change` | The only diff is autoscaler-owned Count/Scaling churn. |
 
 ---
@@ -666,6 +705,8 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_meta_key_changes_total` | Counter | `job`, `source` | Managed-prefix meta keys added, removed, or changed between check cycles, on the HCL side (a commit changed them) or the live side (someone re-registered the job manually). Each transition is also logged at INFO with the behavioural consequence. |
 | `nomad_botherer_meta_only_diffs_total` | Counter | `job` | Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (`--count-meta-only-changes`, `--apply-meta-only-changes`); they converge on the next real update. A non-zero rate is normal after opting a running job in via a commit. |
 | `nomad_botherer_updates_blocked_preexisting_total` | Counter | `job` | Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable applying it with `--apply-existing-drift`. |
+| `nomad_botherer_jobs_left_management_total` | Counter | `job`, `reason` | Managed jobs that left GitOps management, by reason: `tag_removed` (the managed tag was dropped from HCL) or `removed_from_repo` (HCL file deleted or job renamed). Counted once per transition. |
+| `nomad_botherer_job_updates_total` (operation=`DEREGISTER`) | Counter | `operation`, `status` | Deregistrations reaching a terminal state. See [Deregistration](#deregistration-jobs-removed-from-the-repo). |
 
 #### Git tracking
 

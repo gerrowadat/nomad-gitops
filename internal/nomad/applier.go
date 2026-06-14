@@ -73,8 +73,11 @@ func (d *Differ) completeUpdate(u *JobUpdate, status JobUpdateStatus, appliedInd
 
 // applyUpdate executes one update against Nomad.
 func (d *Differ) applyUpdate(u *JobUpdate) {
+	if u.Operation == JobUpdateOperationDeregister {
+		d.applyDeregister(u)
+		return
+	}
 	if u.Operation != JobUpdateOperationRegister {
-		// DEREGISTER is reserved and never enqueued yet; guard anyway.
 		d.completeUpdate(u, JobUpdateStatusFailed, 0, fmt.Sprintf("unsupported operation %q", u.Operation))
 		return
 	}
@@ -126,4 +129,51 @@ func (d *Differ) applyUpdate(u *JobUpdate) {
 	slog.Info("Apply: job registered", "job", u.JobID, "update_id", u.UpdateID,
 		"eval_id", resp.EvalID, "new_modify_index", resp.JobModifyIndex)
 	d.completeUpdate(u, JobUpdateStatusSucceeded, resp.JobModifyIndex, "")
+}
+
+// applyDeregister removes a job that was deleted from the repo. It rechecks
+// live state immediately before the call rather than trusting the stored
+// intent ("recheck, don't remember"): a deregister only proceeds if the job
+// still exists and still carries the managed tag. If it is already gone the
+// update succeeds as a no-op; if it exists but is no longer tagged (someone
+// re-registered it, or took it out of management) the deregister is abandoned.
+func (d *Differ) applyDeregister(u *JobUpdate) {
+	q := &nomadapi.QueryOptions{Namespace: d.namespace}
+	wq := &nomadapi.WriteOptions{Namespace: d.namespace}
+
+	live, _, err := d.jobs.Info(u.JobID, q)
+	if err != nil {
+		if isNotFound(err) {
+			slog.Info("Deregister: job already gone, nothing to do", "job", u.JobID, "update_id", u.UpdateID)
+			d.completeUpdate(u, JobUpdateStatusSucceeded, 0, "")
+			return
+		}
+		d.nomadAPIErrors.WithLabelValues("info").Inc()
+		slog.Warn("Deregister: recheck failed", "job", u.JobID, "update_id", u.UpdateID, "err", err)
+		d.completeUpdate(u, JobUpdateStatusFailed, 0, fmt.Sprintf("recheck: %v", err))
+		d.invalidateSkip()
+		return
+	}
+	if live == nil || !d.metaKeyPresent(live.Meta) {
+		// The job no longer carries the managed tag: precondition gone, do not
+		// touch it. The next cycle re-evaluates against current state.
+		slog.Info("Deregister: live job no longer carries the managed tag; not deregistering",
+			"job", u.JobID, "update_id", u.UpdateID)
+		d.completeUpdate(u, JobUpdateStatusFailed, 0, "live job no longer carries the managed tag")
+		d.invalidateSkip()
+		return
+	}
+
+	slog.Info("Deregister: removing job that was deleted from the repo",
+		"job", u.JobID, "update_id", u.UpdateID, "purge", d.deregisterPurge)
+	evalID, _, err := d.jobs.Deregister(u.JobID, d.deregisterPurge, wq)
+	if err != nil {
+		d.nomadAPIErrors.WithLabelValues("deregister").Inc()
+		slog.Warn("Deregister failed", "job", u.JobID, "update_id", u.UpdateID, "err", err)
+		d.completeUpdate(u, JobUpdateStatusFailed, 0, fmt.Sprintf("deregister: %v", err))
+		d.invalidateSkip()
+		return
+	}
+	slog.Info("Deregister: job deregistered", "job", u.JobID, "update_id", u.UpdateID, "eval_id", evalID, "purge", d.deregisterPurge)
+	d.completeUpdate(u, JobUpdateStatusSucceeded, 0, "")
 }

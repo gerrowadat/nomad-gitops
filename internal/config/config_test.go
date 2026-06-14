@@ -724,3 +724,54 @@ func TestLoadFromArgs_ApplyExistingDriftEnv(t *testing.T) {
 		t.Error("ApplyExistingDrift: want true from env")
 	}
 }
+
+func TestLoadFromArgs_DeregisterDefaults(t *testing.T) {
+	for _, k := range []string{"ENABLE_DEREGISTER", "DEREGISTER_PURGE", "DEREGISTER_GRACE"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.EnableDeregister {
+		t.Error("EnableDeregister should default to false")
+	}
+	if cfg.DeregisterPurge {
+		t.Error("DeregisterPurge should default to false")
+	}
+	if cfg.DeregisterGrace != 5*time.Minute {
+		t.Errorf("DeregisterGrace default: want 5m, got %v", cfg.DeregisterGrace)
+	}
+}
+
+func TestLoadFromArgs_DeregisterFlagsSet(t *testing.T) {
+	for _, k := range []string{"ENABLE_DEREGISTER", "DEREGISTER_PURGE", "DEREGISTER_GRACE"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--enable-deregister", "--deregister-purge", "--deregister-grace", "30s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.EnableDeregister || !cfg.DeregisterPurge || cfg.DeregisterGrace != 30*time.Second {
+		t.Errorf("deregister flags not set: %+v", cfg)
+	}
+}
+
+func TestLoadFromArgs_DeregisterEnv(t *testing.T) {
+	os.Setenv("ENABLE_DEREGISTER", "true")
+	os.Setenv("DEREGISTER_GRACE", "1h")
+	t.Cleanup(func() {
+		os.Unsetenv("ENABLE_DEREGISTER")
+		os.Unsetenv("DEREGISTER_GRACE")
+	})
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.EnableDeregister || cfg.DeregisterGrace != time.Hour {
+		t.Errorf("deregister env not honoured: %+v", cfg)
+	}
+}

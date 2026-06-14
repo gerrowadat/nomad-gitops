@@ -39,6 +39,11 @@ func UpdatesBlockedExistingDrift(d *Differ) *prometheus.CounterVec {
 	return d.updatesBlockedExistingDrift
 }
 
+// JobsLeftManagement exposes the scope-exit counter for metric assertions.
+func JobsLeftManagement(d *Differ) *prometheus.CounterVec {
+	return d.jobsLeftManagement
+}
+
 // LastNomadIndex exposes the cached Raft index for skip-invalidation tests.
 func LastNomadIndex(d *Differ) uint64 {
 	d.mu.RLock()

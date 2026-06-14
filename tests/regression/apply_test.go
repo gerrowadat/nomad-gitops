@@ -485,3 +485,52 @@ func TestApplyE2E_ExistingDrift_AtStartup(t *testing.T) {
 		waitForTaskArgs(t, jobID, "999", 60*time.Second)
 	})
 }
+
+// TestDeregisterE2E_RemovedFromRepo verifies that a job removed from the repo
+// entirely (HCL deleted) while still running is deregistered only with
+// --enable-deregister, and only after the grace period. By default it is left
+// running.
+func TestDeregisterE2E_RemovedFromRepo(t *testing.T) {
+	run := func(t *testing.T, enable bool) string {
+		repoURL, workDir, branch := createGitRepo(t)
+		jobID := uniqueJobID("dereg")
+
+		// The live job carries the managed tag + policy full (registered from
+		// the same HCL we then commit and remove).
+		hcl := testJobHCLWithPolicy(jobID, "full")
+		registerJobHCL(t, hcl)
+		waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": hcl})
+		// Remove the job from the repo (file deleted).
+		gitRun(t, workDir, "git", "rm", jobID+".hcl")
+		gitRun(t, workDir, "git", "commit", "-m", "remove "+jobID)
+		gitRun(t, workDir, "git", "push")
+
+		extra := []string{
+			"--repo-url=" + repoURL, "--branch=" + branch,
+			"--apply-interval=1s", "--diff-interval=1s", "--poll-interval=1s",
+			"--deregister-grace=2s",
+		}
+		if enable {
+			extra = append(extra, "--enable-deregister")
+		}
+		startBotherer(t, extra...)
+		return jobID
+	}
+
+	t.Run("default leaves the orphan running", func(t *testing.T) {
+		jobID := run(t, false)
+		time.Sleep(8 * time.Second)
+		if _, _, err := testNomadClient.Jobs().Info(jobID, &nomadapi.QueryOptions{}); err != nil {
+			t.Fatalf("orphan should still exist (not deregistered) by default: %v", err)
+		}
+		waitForJobStatus(t, jobID, "running", 5*time.Second)
+	})
+
+	t.Run("flag deregisters after grace", func(t *testing.T) {
+		jobID := run(t, true)
+		// Default deregister is a graceful stop, so the job goes to "dead".
+		waitForJobStatus(t, jobID, "dead", 60*time.Second)
+	})
+}
