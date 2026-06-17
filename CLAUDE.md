@@ -6,6 +6,8 @@
 
 **Always update docs.** Config flag added or changed? Update the README table. Behaviour changed? Update the relevant section. Keep docs current.
 
+**Proposals graduate to design docs when implemented.** `docs/proposals/` is for not-yet-built ideas; `docs/design/` is the retrospective record of *why* a shipped feature is the way it is. When a feature in a proposal lands, `git mv` the doc to `docs/design/`, retitle it `# Design: …`, update its status (what shipped, in which release, and where it diverged from the proposal), fix cross-links, and leave any still-unimplemented parts behind in `docs/proposals/`. Do this as part of the feature's own PR going forward, so the split never drifts.
+
 **Do not merge PRs.** Create the branch, commit, push, open the PR — then stop. Leave merging to the human.
 
 **Never push directly to main.** All changes go through a branch and PR, no matter how small. This includes docs, README, and config-only changes.
@@ -54,12 +56,14 @@ Do not weaken these defaults. Detection and application are decoupled
 deliberately not persisted — Git and Nomad hold all durable truth and a
 restart costs one diff cycle.
 
-The design proposals in `docs/proposals/` record the reasoning; read them
-before extending the apply side (automatic rollback, checkpointing, and
-Diun integration remain unimplemented; the register and deregister paths
-have shipped). `docs/prior-art.md` surveys the
-existing tooling (nomad-gitops-operator, nomad-ops, Levant, Waypoint) and
-explains the mistakes nomad-botherer deliberately avoids.
+The reasoning is recorded in two places: `docs/design/` holds the design
+records for shipped features (the register/apply path, update policies),
+and `docs/proposals/` holds not-yet-built ideas (automatic rollback,
+checkpointing, Diun integration). Read the relevant doc before extending
+the apply side; the register and deregister paths have shipped.
+`docs/prior-art.md` surveys the existing tooling (nomad-gitops-operator,
+nomad-ops, Levant, Waypoint) and explains the mistakes nomad-botherer
+deliberately avoids.
 
 ### Core design principles for the apply side (implemented — preserve them)
 

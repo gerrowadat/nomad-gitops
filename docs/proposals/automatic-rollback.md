@@ -3,10 +3,10 @@
 **Status**: draft (research)
 **Date**: 2026-06-17
 
-Related proposals: [gitops-job-updates.md](gitops-job-updates.md) (the apply
+Related proposals: [gitops-job-updates.md](../design/gitops-job-updates.md) (the apply
 path; "Rollback" open question and the dispatched-executor note),
 [change-checkpointing.md](change-checkpointing.md) (the no-external-database /
-state-lives-in-Git-and-Nomad principle), [update-policies.md](update-policies.md)
+state-lives-in-Git-and-Nomad principle), [update-policies.md](../design/update-policies.md)
 (per-job control over what is applied).
 
 ## Background
