@@ -1,13 +1,22 @@
-# Proposal: GitOps job updates
+# Design: GitOps job updates
 
-**Status**: implemented (register path, in-memory queue) — see CHANGELOG  
-**Date**: 2026-05-13  
-**Updated**: 2026-06-11
+**Status**: implemented — apply/register path and async queue in v0.5.0,
+deregistration in v0.7.0. See the CHANGELOG.
+**Date**: 2026-05-13 (proposed) · moved to design 2026-06-17
 
-Related proposals: [change-checkpointing.md](change-checkpointing.md)
-(persisting queue state), [update-policies.md](update-policies.md) (per-job
-control over what gets applied), [diun-integration.md](diun-integration.md)
-(tracking upstream image updates).
+> This was a forward-looking proposal; it now records the thinking behind the
+> shipped implementation. **Alternative B (async queue with reconciliation
+> loop)** was chosen and the **in-process** applier (not the dispatched
+> executor). The code lives in `internal/nomad/` (`update.go`, `applier.go`,
+> `differ.go`). Where reality diverged from the proposal it is noted inline.
+> Some "open questions" at the end remain genuinely open.
+
+Related docs: [update-policies.md](update-policies.md) (per-job control over
+what gets applied — also implemented),
+[change-checkpointing.md](../proposals/change-checkpointing.md) (persisting
+queue state — the checkpoint store remains a proposal; the queue is in-memory),
+[diun-integration.md](../proposals/diun-integration.md) (tracking upstream
+image updates — proposed).
 
 ## Background
 
@@ -43,7 +52,7 @@ Not every diff becomes an update. Two filters sit between detection and
 enqueueing:
 
 - **Opt-in scope**: only jobs with `gitops_managed = "true"` are considered
-  at all (see [change-checkpointing.md](change-checkpointing.md),
+  at all (see [change-checkpointing.md](../proposals/change-checkpointing.md),
   Alternative 3).
 - **Per-job update policy**: the job's `gitops_update_policy` meta key
   (`full` / `image-only` / `none`) decides whether this *kind* of change may
@@ -191,7 +200,7 @@ What makes interruption at each point safe:
   current HEAD). A stored intent is never sufficient on its own, so a stale
   replayed intent is harmless by construction.
 
-The [checkpointing proposal](change-checkpointing.md) layers durability on
+The [checkpointing proposal](../proposals/change-checkpointing.md) layers durability on
 top of this for visibility and audit — an operator mid-rollout can see what
 was applied — but it is an optimisation, never a correctness dependency. If
 the checkpoint store is empty, wrong, or unreachable, the system falls back

@@ -95,8 +95,8 @@ conservative (detection-only).
 - **GitOps apply: nomad-botherer can now mutate jobs.** When drift is
   detected for a managed job, it can re-register the job from its HCL —
   implementing the async-queue design from
-  `docs/proposals/gitops-job-updates.md` and the policy model from
-  `docs/proposals/update-policies.md`. Everything defaults to
+  `docs/design/gitops-job-updates.md` and the policy model from
+  `docs/design/update-policies.md`. Everything defaults to
   detection-only:
   - Per-job update policies: `none` (default), `image-only` (apply only
     when the entire plan diff is Docker image fields), `full`. Set the

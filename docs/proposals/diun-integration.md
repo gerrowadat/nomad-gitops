@@ -36,7 +36,7 @@ The constraints that frame the design:
    that is not this tool.
 2. **nomad-botherer acts only on Git and Nomad state.** Everything it knows
    must be recomputable from those two (see "Restart safety and recovery" in
-   [gitops-job-updates.md](gitops-job-updates.md)). Diun notifications are
+   [gitops-job-updates.md](../design/gitops-job-updates.md)). Diun notifications are
    delivered exactly once and are not recomputable, so nomad-botherer does
    not consume them.
 
@@ -78,7 +78,7 @@ managed jobs that meta is written in the HCL and flows to the live job
 through registration. So tag-filter policy remains version-controlled and
 reviewable even though nomad-botherer never touches Diun. (Dotted meta keys
 need HCL's object-expression form; see the syntax note in
-[update-policies.md](update-policies.md).)
+[update-policies.md](../design/update-policies.md).)
 
 Accepted tradeoffs of watching the cluster rather than the repo:
 
@@ -180,7 +180,7 @@ correctness and state are untouched. Tools like Renovate occupy the same
 seat (see [prior-art.md](../prior-art.md)).
 
 Either way, the merged PR is ordinary Git drift and flows through the apply
-path under the job's [update policy](update-policies.md) — for jobs set to
+path under the job's [update policy](../design/update-policies.md) — for jobs set to
 `image-only`, this circle is precisely the automation they opted into.
 
 ---

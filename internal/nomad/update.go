@@ -121,7 +121,7 @@ const maxTerminalUpdates = 200
 // UpdateQueue is the in-memory queue between detection and application.
 // Restart loses it by design: the next diff cycle recreates any update whose
 // drift still exists, and CAS plus re-planning make a re-apply harmless. See
-// docs/proposals/gitops-job-updates.md ("Restart safety and recovery").
+// docs/design/gitops-job-updates.md ("Restart safety and recovery").
 type UpdateQueue struct {
 	mu      sync.Mutex
 	updates []*JobUpdate // newest last

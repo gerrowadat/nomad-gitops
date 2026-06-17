@@ -1,7 +1,15 @@
-# Proposal: per-job update policies
+# Design: per-job update policies
 
-**Status**: implemented (register path, in-memory queue) — see CHANGELOG  
-**Date**: 2026-06-11
+**Status**: implemented — v0.5.0 (`full`/`image-only`/`none`, the diff
+classifier), with later refinements (meta-only handling, pre-existing-drift
+gate) in v0.6.0. See the CHANGELOG.
+**Date**: 2026-06-11 (proposed) · moved to design 2026-06-17
+
+> This records the thinking behind the shipped policy model. One notable
+> change from the original proposal: the **default policy is `none`, not
+> `full`**, and there is no separate global apply switch — the policy flag is
+> the deployment-level gate (see the "policy key" section, corrected inline).
+> The classifier lives in `internal/nomad/classify.go`.
 
 ## Background
 
@@ -19,7 +27,7 @@ want drift *reported* but never applied.
 This proposal adds a per-job policy key to the existing meta opt-in mechanism,
 so that the degree of automation is declared in the job's HCL alongside the
 opt-in flag — version-controlled, reviewable, and human-written (no
-meta-drift; see [change-checkpointing.md](change-checkpointing.md)).
+meta-drift; see [change-checkpointing.md](../proposals/change-checkpointing.md)).
 
 ---
 
@@ -146,7 +154,7 @@ meta {
 }
 ```
 
-The [Diun integration proposal](diun-integration.md) reuses Diun's dotted
+The [Diun integration proposal](../proposals/diun-integration.md) reuses Diun's dotted
 `diun.*` meta vocabulary, and dotted keys require the object-expression form.
 HCL does not allow mixing the two forms in one block, so a job using both
 families of keys writes:
@@ -170,7 +178,7 @@ because the error HCL produces when you mix forms is unhelpful.
 This proposal governs the *downstream* direction: Git has changed, how much
 of that change may be applied to Nomad automatically.
 
-The [Diun integration proposal](diun-integration.md) governs the *upstream*
+The [Diun integration proposal](../proposals/diun-integration.md) governs the *upstream*
 direction: a newer image exists in a registry, but Git still pins the old
 tag. That is not drift — Git and Nomad agree — so no policy value causes it
 to be applied, and nomad-botherer does not even consume the notification:

@@ -48,7 +48,7 @@ database, and records one considered-and-rejected alternative.
   comes from CAS and re-planning, and deregister safety comes from
   rechecking live state immediately before the call, not from remembered
   intent. See "Restart safety and recovery" in
-  [gitops-job-updates.md](gitops-job-updates.md). This rule is
+  [gitops-job-updates.md](../design/gitops-job-updates.md). This rule is
   exception-free: anything that would require nomad-botherer to hold
   non-recomputable state belongs outside the tool (the
   [Diun integration proposal](diun-integration.md) keeps once-only

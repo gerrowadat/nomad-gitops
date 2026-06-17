@@ -142,8 +142,9 @@ each does and where each falls short, and describes the design decisions
 behind nomad-botherer's apply side: plan before every write, CAS on every
 register, opt-in scope, and never writing to Git.
 
-The design proposals that shaped the implementation are in
-[`docs/proposals/`](docs/proposals/).
+Design records for shipped features live in
+[`docs/design/`](docs/design/) (the thinking behind what was built);
+not-yet-built ideas live in [`docs/proposals/`](docs/proposals/).
 
 ---
 
@@ -501,8 +502,8 @@ Each update carries a stable ID (`<job_id>/<short_commit>`), the operation,
 status (`PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED`), the
 policy that allowed it, and the CAS token used.
 
-The design background is in `docs/proposals/gitops-job-updates.md` and
-`docs/proposals/update-policies.md`.
+The design background is in `docs/design/gitops-job-updates.md` and
+`docs/design/update-policies.md`.
 
 ### Deregistration (jobs removed from the repo)
 
