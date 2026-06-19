@@ -217,17 +217,30 @@ than today (an unbounded loop) and needs nothing durable.
 
 ### Approach B — tag the failed version (durable, not the default)
 
-Alternatively, when nomad-botherer observes a deployment fail, it could
-`Jobs.TagVersion(jobID, failedVersion, "gitops-failed-<commit-short>")`. Tagged
-versions survive GC, so the guard becomes durable across any time horizon and
-across restarts, checked with a cheap tag lookup instead of a spec comparison.
+Alternatively, when nomad-botherer observes a deployment fail, it tags the
+failed version with `Jobs.TagVersion`. Tagged versions survive GC, so the guard
+becomes durable across any time horizon and across restarts, recovered with a
+cheap tag-name lookup instead of (or alongside) a spec comparison.
 
-This is rejected as the default because it is **state nomad-botherer writes into
+This is not the default because it is **state nomad-botherer writes into
 Nomad** — the very thing the no-persistent-state rule pushes against. It is a
 Nomad-native write (not a job-meta write, so it avoids the meta-drift problem),
 and it is recoverable, but it accumulates tags that something must prune, and it
-makes nomad-botherer responsible for state again. Offer it behind a flag for
-operators who want hard durability; keep Approach A as the default.
+makes nomad-botherer responsible for state again. It is offered behind
+`--flap-guard=tag` for operators who want hard durability; `history` is the
+default.
+
+**As shipped.** The tag name is `<prefix>-failed-<fingerprint>`, where
+`<prefix>` is `--managed-meta-prefix` (default `gitops`) and `<fingerprint>` is
+the same spec fingerprint Approach A compares (see "Spec fingerprinting" below).
+Encoding the fingerprint in the tag name lets a later cycle recognise a
+known-failed spec by reading the tag, with no recompute and even if the failed
+deployment record itself has been GC'd. Because the tag name derives from the
+prefix, `--flap-guard=tag` with an empty `--managed-meta-prefix` is rejected at
+config load — an empty prefix would produce unrecognisable `-failed-<fp>` tags
+and silently break durable blocking. A Nomad version carries at most one tag, so
+a version already tagged (by us on an earlier cycle, or by anything else) is
+left alone.
 
 ### Why the guard releases correctly
 
@@ -237,6 +250,29 @@ in Git. A new commit that changes the spec is, by construction, not the
 known-failed spec, so it applies normally. (Keying on spec rather than commit
 also means a no-op commit that doesn't touch the job doesn't spuriously re-arm
 or release the guard.)
+
+### Spec fingerprinting (as shipped)
+
+The "same spec" test is a SHA-256 over the job's JSON, normalised to drop
+exactly what would otherwise cause spurious mismatches: Nomad-injected
+bookkeeping (`Version`, `Stable`, `SubmitTime`, `ModifyIndex`, `JobModifyIndex`,
+`CreateIndex`, `Status`, `StatusDescription`, `VersionTag`, `Namespace`), the
+managed-prefix meta keys, and autoscaler-owned `Count`/`Scaling` on autoscaled
+groups — the same exclusions the diff classifier makes. The candidate
+fingerprint is computed from the HCL-parsed job; the failed-version fingerprint
+is computed from the version Nomad stored (history mode) or read back from the
+tag name (tag mode).
+
+Failure is keyed on a **failed deployment status**, not merely a non-`Stable`
+version: a job with no health checks is never `Stable`, so "not stable" would
+mis-fire. This is why both the guard and active rollback are scoped to
+deployment-producing jobs.
+
+Comparing an HCL-parsed job against a Nomad-stored version is best-effort:
+server-side defaulting can make a genuinely identical spec fingerprint
+differently, in which case the guard *misses* and the bad spec is retried once
+more and caught again. That degradation is one-way and safe — a *false block* of
+a good change would need a SHA-256 collision.
 
 ## Active rollback for jobs Nomad won't revert (optional)
 
@@ -257,49 +293,78 @@ wants nomad-botherer to centralize the behaviour, an *active* rollback:
 3. Mark the update `ROLLED_BACK`; the flap-guard (above) then prevents
    re-applying the same spec.
 
-This is the heavy, risky path and must be **off by default** (`--enable-rollback`).
-It duplicates machinery Nomad already has for the common case, and — as the
-job-updates proposal already notes — *watching a deployment is a long-running
-phase that outlives a single nomad-botherer process*, which is the strongest
-argument for the dispatched-executor model. The honest recommendation is to
-make active rollback secondary and **prefer telling operators to set
-`auto_revert` in their job HCL.**
+This is the heavy, risky path and is **off by default** (`--allow-rollback`).
+It duplicates machinery Nomad already has for the common case. The honest
+recommendation is to make active rollback secondary and **prefer telling
+operators to set `auto_revert` in their job HCL.**
+
+**As shipped — poll-based, not a long-running watch.** The numbered sketch above
+moves an update into a watch state and blocks on the deployment to a terminal
+status; the implementation does not. Instead, each diff cycle the rollback poll
+checks `LatestDeployment` for every managed job that has rollback enabled, and a
+`failed` status enqueues a `REVERT` update to the last stable version (most
+recent `Stable` version below the failed one, from `Jobs.Versions`). The applier
+runs `Jobs.Revert(jobID, lastStable, enforcePriorVersion=<failedVersion>)` — the
+same CAS guard. This sidesteps the long-running-watch and dispatched-executor
+question entirely: there is no watch to outlive a process, so the proposed
+`--rollback-watch-timeout` was dropped (Nomad's `progress_deadline` decides when
+a deployment fails). The revert is a normal `REVERT`-operation `JobUpdate` that
+reaches the usual `SUCCEEDED`/`FAILED` terminal states; no `ROLLED_BACK` status
+was added. After a successful revert the live job is back at the stable version
+while Git still wants the failed spec, so the next cycle's drift is held by the
+flap-guard.
+
+**auto_revert always wins.** If a rollback-enabled job's `update` stanza (at the
+job or group level) also sets `auto_revert`, nomad-botherer stands down and lets
+Nomad revert, logging the clash once per job. Even if that check were bypassed,
+the CAS guard would reject the redundant revert because Nomad's own revert has
+already moved the job off the failed version.
 
 ### Restart safety of active rollback
 
-No durable state is needed even here. On restart, in-flight watches are
-recomputed: for each managed job, query `LatestDeployment`; if it is `running`
-and was triggered by a version whose spec matches our last applied intent,
-resume watching; if it already failed and Nomad/we reverted, the flap-guard sees
-a known-failed spec and holds. A revert that was interrupted mid-call is safe to
-re-issue because `Jobs.Revert` with `enforcePriorVersion` is idempotent against
-the current version.
+No durable state is needed. The poll recomputes from scratch every cycle: it
+reads `LatestDeployment` and `Jobs.Versions` fresh, so a restart simply resumes
+polling. A revert interrupted mid-call is safe to re-issue because `Jobs.Revert`
+with `enforcePriorVersion` is idempotent against the current version, and the
+`REVERT` update's stable ID (`<job_id>/revert-<failed_version>`) dedups a
+re-enqueue of the same recovery.
 
-## Configuration (sketch)
+## Configuration (as shipped)
+
+The sketch's three booleans collapsed into one tri-state guard flag plus one
+rollback flag, each with a per-job meta override.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--block-known-failed` | `BLOCK_KNOWN_FAILED` | `true` | The flap-loop guard (Approach A). Read-only; safe to default on once apply is enabled. |
-| `--enable-rollback` | `ENABLE_ROLLBACK` | `false` | Active rollback (watch deployment, `Jobs.Revert`) for jobs without native `auto_revert`. |
-| `--rollback-watch-timeout` | `ROLLBACK_WATCH_TIMEOUT` | `10m` | Cap on watching a deployment before giving up (falls back to surfacing drift). |
-| `--tag-failed-versions` | `TAG_FAILED_VERSIONS` | `false` | Durable known-failed via version tags (Approach B) instead of ephemeral history query. |
+| `--flap-guard` | `FLAP_GUARD` | `history` | Flap-loop guard mode: `history` (Approach A, ephemeral), `tag` (Approach B, durable), or `off`. Per-job override: `<prefix>_flap_guard`. `tag` requires a non-empty `--managed-meta-prefix`. |
+| `--allow-rollback` | `ALLOW_ROLLBACK` | `false` | Active rollback for jobs without native `auto_revert`. Per-job override: `<prefix>_rollback`. |
 
-The guard could also be made policy-aware (only engage for jobs whose effective
-update policy is `full`/`image-only`), consistent with the existing apply gates.
+The proposed `--rollback-watch-timeout` was dropped (the poll has no watch to
+cap). The guard is not policy-aware: it engages for any would-be apply
+regardless of `full`/`image-only`, because by the time a candidate reaches the
+guard it has already passed the policy gate. Both features engage only for
+deployment-producing jobs.
 
 ## Observability
 
-Per the metrics convention:
+Per the metrics convention, as shipped:
 
-- `nomad_botherer_deployments_watched_total{result}` — `successful` / `failed` /
-  `timeout`, for the active-rollback path.
-- `nomad_botherer_rollbacks_total{job,result}` — active `Jobs.Revert` calls.
 - `nomad_botherer_updates_blocked_known_failed_total{job}` — applies withheld by
   the flap-guard (the signal an operator watches to find a job stuck on a
   known-bad commit awaiting a fix in Git).
+- `nomad_botherer_rollbacks_total{job,result}` — active-rollback outcomes:
+  `queued` (a revert was enqueued), `deferred_auto_revert` (stood down for
+  Nomad's `auto_revert`), `no_stable_version` (nothing to revert to).
+- `nomad_botherer_failed_versions_tagged_total{job}` — failed versions tagged by
+  `--flap-guard=tag`.
+- `REVERT` joins `REGISTER`/`DEREGISTER` in
+  `nomad_botherer_job_updates_total{operation,status}`.
 - A new `apply_action` value `blocked_known_failed` on the diff, so `/diffs`,
   the API, and `/healthz` explain the hold (consistent with the existing
   apply-reason exposure).
+
+The proposed `deployments_watched_total{result}` was not added: there is no
+deployment watch in the poll-based design.
 
 ## Alternatives summary
 
@@ -327,30 +392,32 @@ Per the metrics convention:
    meta-key validation warning when a `full`-policy job has no `auto_revert`.
 
 3. **Phase 2 (optional, flagged): active rollback.** Only for jobs Nomad will
-   not revert, behind `--enable-rollback`, with the deployment-watch and CAS
-   `Jobs.Revert`. Treat the long-running watch honestly: recompute on restart;
-   revisit the dispatched-executor model if the watch needs to survive process
-   death cleanly.
+   not revert, behind `--allow-rollback`, with a CAS `Jobs.Revert`. Shipped as a
+   per-cycle poll rather than a long-running watch, so the dispatched-executor
+   question did not need answering: there is no watch to survive process death.
 
-## Open questions
+## Open questions (resolved)
 
-- **Spec-equality fidelity.** Comparing canonicalized job specs across versions
-  must ignore exactly what the diff classifier ignores (`gitops_*` meta,
-  autoscaler `Count`/`Scaling`) and nothing more, or the guard will mis-fire.
-  Is the existing classification reusable as-is, or does version comparison need
-  its own normalization (e.g. Nomad-injected fields like `SubmitTime`,
-  `Version`, `ModifyIndex`)?
-- **GC window vs. retry tolerance.** Is "retry the bad spec at most once per
-  `job_gc_threshold`" acceptable for all operators, or do some need the durable
-  (tag) guard? Should the guard surface *how long ago* the failure was?
-- **What counts as "failed" for non-deployment jobs?** Batch jobs legitimately
-  have failed allocations within a restart budget. Defining failure for them is
-  fuzzier than a deployment status and may be out of scope for Phase 1.
-- **Interaction with existing gates.** How does `blocked_known_failed` compose
-  with `--apply-existing-drift`, supersession, and the meta-only handling? A
-  newer commit that supersedes a known-failed pending update should clear the
-  guard for the superseded spec.
-- **Active rollback and `auto_revert` together.** If a job has *both*
-  `auto_revert` and `--enable-rollback`, nomad-botherer must defer to Nomad and
-  never double-revert; the deployment-watch should recognise a Nomad-initiated
-  revert in progress and stand down.
+- **Spec-equality fidelity.** *Resolved.* Version comparison needed its own
+  normalization: the fingerprint strips the diff classifier's exclusions
+  (`gitops_*` meta, autoscaler `Count`/`Scaling`) *and* the Nomad-injected
+  fields (`SubmitTime`, `Version`, `ModifyIndex`, and the rest listed under
+  "Spec fingerprinting"). Cross-source comparison stays best-effort and degrades
+  one-way (a miss, never a false block).
+- **GC window vs. retry tolerance.** *Resolved.* `history` accepts "retry at
+  most once per `job_gc_threshold`"; operators who want hard durability use
+  `--flap-guard=tag`. The guard does not currently surface how long ago the
+  failure was — a possible future addition, not built.
+- **What counts as "failed" for non-deployment jobs?** *Deferred by scoping
+  out.* Both features apply only to deployment-producing jobs, keyed on a
+  `failed` deployment status. Batch/system/no-health-check jobs get neither, so
+  defining failure for them is not on the critical path.
+- **Interaction with existing gates.** *Resolved.* The flap-guard runs last in
+  `decideApplyAction`, after the policy / pre-existing-drift / meta-only /
+  creation gates, so it only ever holds a would-be apply. Supersession is
+  unchanged: a newer commit with a different spec is, by construction, not the
+  known-failed spec, so it is not blocked.
+- **Active rollback and `auto_revert` together.** *Resolved.* When a
+  rollback-enabled job also sets `auto_revert`, nomad-botherer stands down and
+  logs the clash once; the CAS guard on `Jobs.Revert` is a second line of
+  defence against a double-revert.
