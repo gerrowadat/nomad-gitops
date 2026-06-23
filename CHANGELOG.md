@@ -17,7 +17,10 @@
   `--nomad-token`, which is retained for manual running and testing. New counter
   `nomad_botherer_nomad_token_refreshes_total{result}`. See the README
   "Authenticating to Nomad" section and `docs/design/nomad-auth.md`; the example
-  job in `examples/nomad-botherer.hcl` now uses workload identity.
+  job in `examples/nomad-botherer.hcl` now uses workload identity. Covered by a
+  regression test (`tests/regression/auth_test.go`) that runs against a real
+  ACL-enabled Nomad: static token vs anonymous denial, token-file and
+  auto-detected workload-identity auth, and live token rotation.
 
 ## v0.8.0 — 2026-06-20
 

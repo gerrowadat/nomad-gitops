@@ -35,6 +35,13 @@ import (
 // The container runs with --privileged so Nomad can manage cgroups and run
 // raw_exec tasks (child processes inside the container).
 func startNomadDocker(version string) (addr string, cleanup func(), err error) {
+	return startNomadDockerWithConfig(version, "")
+}
+
+// startNomadDockerWithConfig is startNomadDocker with an extra HCL config
+// fragment appended to the agent config (e.g. `acl { enabled = true }`). An
+// empty fragment is equivalent to startNomadDocker.
+func startNomadDockerWithConfig(version, extraConfig string) (addr string, cleanup func(), err error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return "", nil, fmt.Errorf("docker not in PATH: %w", err)
 	}
@@ -57,7 +64,7 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 	addr = fmt.Sprintf("http://127.0.0.1:%d", ports[0])
 	name := fmt.Sprintf("nomad-regression-%s", randomSuffix())
 
-	runArgs, cfgPath, err := buildDockerRunArgs(name, image, ports[0], ports[1], ports[2])
+	runArgs, cfgPath, err := buildDockerRunArgs(name, image, ports[0], ports[1], ports[2], extraConfig)
 	if err != nil {
 		return "", nil, err
 	}
@@ -99,32 +106,35 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 // and must be removed by the caller after the container exits. On other
 // platforms the original -p port-mapping approach is used; the container has
 // its own network namespace there, so only the HTTP port needs mapping.
-func buildDockerRunArgs(name, image string, httpPort, rpcPort, serfPort int) (args []string, cfgPath string, err error) {
+func buildDockerRunArgs(name, image string, httpPort, rpcPort, serfPort int, extraConfig string) (args []string, cfgPath string, err error) {
 	if runtime.GOOS != "linux" {
-		return []string{
+		// The container has its own network namespace, so only the HTTP port
+		// needs mapping and no ports config file is required. A config file is
+		// still written when there is extra config to carry (e.g. ACLs).
+		base := []string{
 			"run", "-d",
 			"--name", name,
 			"--privileged",
 			"-p", fmt.Sprintf("%d:4646", httpPort),
-			image,
-			"agent", "-dev",
-			"-bind=0.0.0.0",
-			"-log-level=error",
-		}, "", nil
+		}
+		if extraConfig == "" {
+			return append(base, image, "agent", "-dev", "-bind=0.0.0.0", "-log-level=error"), "", nil
+		}
+		path, ferr := writeNomadConfig(extraConfig)
+		if ferr != nil {
+			return nil, "", ferr
+		}
+		base = append(base, "-v", path+":/nomad-reg.hcl:ro")
+		return append(base, image, "agent", "-dev", "-bind=0.0.0.0", "-config=/nomad-reg.hcl", "-log-level=error"), path, nil
 	}
 
 	// Nomad has no CLI flags for ports; they must be set via a config file.
-	// Write a minimal one, mount it read-only, and pass -config.
-	f, ferr := os.CreateTemp("", "nomad-reg-*.hcl")
+	// Write the ports block (plus any extra config) and mount it read-only.
+	ports := fmt.Sprintf("ports {\n  http = %d\n  rpc  = %d\n  serf = %d\n}\n", httpPort, rpcPort, serfPort)
+	path, ferr := writeNomadConfig(ports + extraConfig)
 	if ferr != nil {
-		return nil, "", fmt.Errorf("create nomad config: %w", ferr)
+		return nil, "", ferr
 	}
-	if _, ferr = fmt.Fprintf(f, "ports {\n  http = %d\n  rpc  = %d\n  serf = %d\n}\n", httpPort, rpcPort, serfPort); ferr != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return nil, "", fmt.Errorf("write nomad config: %w", ferr)
-	}
-	f.Close()
 
 	return []string{
 		"run", "-d",
@@ -135,16 +145,38 @@ func buildDockerRunArgs(name, image string, httpPort, rpcPort, serfPort int) (ar
 		// creates a private cgroup namespace and Nomad cannot write to
 		// cgroup.subtree_control to set up its own process manager.
 		"--cgroupns=host",
-		"-v", f.Name() + ":/nomad-reg.hcl:ro",
+		"-v", path + ":/nomad-reg.hcl:ro",
 		image,
 		"agent", "-dev",
 		"-bind=127.0.0.1",
 		"-config=/nomad-reg.hcl",
 		"-log-level=error",
-	}, f.Name(), nil
+	}, path, nil
 }
 
-// waitForNomadReady polls /v1/agent/self until it returns 200.
+// writeNomadConfig writes content to a temp HCL file and returns its path. The
+// caller mounts it into the container and removes it after the container exits.
+func writeNomadConfig(content string) (string, error) {
+	f, err := os.CreateTemp("", "nomad-reg-*.hcl")
+	if err != nil {
+		return "", fmt.Errorf("create nomad config: %w", err)
+	}
+	if _, err = io.WriteString(f, content); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write nomad config: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("close nomad config: %w", err)
+	}
+	return f.Name(), nil
+}
+
+// waitForNomadReady polls /v1/agent/self until the HTTP API is serving. A 200
+// means the agent is up; a 403 means the API is up but ACLs are enabled and the
+// (anonymous) probe is denied — which still indicates readiness for an
+// ACL-enabled cluster, whose callers authenticate or bootstrap afterwards.
 func waitForNomadReady(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -152,7 +184,7 @@ func waitForNomadReady(addr string, timeout time.Duration) error {
 		resp, err := client.Get(addr + "/v1/agent/self")
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusForbidden {
 				return nil
 			}
 		}
@@ -653,7 +685,7 @@ func TestInfra_BuildDockerRunArgs_PinsAllPorts(t *testing.T) {
 		t.Skip("host-networking config path is Linux-only")
 	}
 
-	args, cfgPath, err := buildDockerRunArgs("test-name", "test-image", 10001, 10002, 10003)
+	args, cfgPath, err := buildDockerRunArgs("test-name", "test-image", 10001, 10002, 10003, "")
 	if err != nil {
 		t.Fatalf("buildDockerRunArgs: %v", err)
 	}

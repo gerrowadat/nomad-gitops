@@ -471,8 +471,17 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	return d
 }
 
-// NewDiffer creates a Differ backed by a real Nomad API client.
+// NewDiffer creates a Differ backed by a real Nomad API client, registering
+// metrics into the default Prometheus registry.
 func NewDiffer(cfg *config.Config) (*Differ, error) {
+	return NewDifferWithRegistry(cfg, prometheus.DefaultRegisterer)
+}
+
+// NewDifferWithRegistry is like NewDiffer but registers metrics into reg rather
+// than the default registry, so more than one real-client Differ can be built
+// in a single process (e.g. tests exercising token resolution, or embedding)
+// without a duplicate-registration panic.
+func NewDifferWithRegistry(cfg *config.Config, reg prometheus.Registerer) (*Differ, error) {
 	token, watchPath, err := resolveNomadToken(cfg)
 	if err != nil {
 		return nil, err
@@ -499,7 +508,7 @@ func NewDiffer(cfg *config.Config) (*Differ, error) {
 		slog.Info("No Nomad token configured; using anonymous access (works only when ACLs are disabled)")
 	}
 
-	d := newDifferBase(client.Jobs(), cfg, prometheus.DefaultRegisterer)
+	d := newDifferBase(client.Jobs(), cfg, reg)
 	d.nomadClient = client
 	d.tokenFilePath = watchPath
 	d.tokenPollInterval = cfg.NomadTokenPollInterval
