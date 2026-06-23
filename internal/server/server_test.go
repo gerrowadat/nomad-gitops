@@ -626,7 +626,7 @@ func TestHealthz_NotReady_Returns503(t *testing.T) {
 func TestHealthz_GitNotReady_Returns503(t *testing.T) {
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
 	diffSrc := &mockDiffSource{lastCheck: time.Now(), lastCommit: "abc"} // diffs ready
-	gitSrc := &mockGitSource{}                                            // git not ready
+	gitSrc := &mockGitSource{}                                           // git not ready
 	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 
 	rec := httptest.NewRecorder()
@@ -638,7 +638,7 @@ func TestHealthz_GitNotReady_Returns503(t *testing.T) {
 
 func TestHealthz_DiffsNotReady_Returns503(t *testing.T) {
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main"}
-	diffSrc := &mockDiffSource{}                                                // diffs not ready
+	diffSrc := &mockDiffSource{}                                        // diffs not ready
 	gitSrc := &mockGitSource{lastCommit: "abc", lastUpdate: time.Now()} // git ready
 	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 
@@ -997,7 +997,7 @@ func TestAPI_NotReady_Status_Returns503(t *testing.T) {
 	const key = "testkey"
 	cfg := &config.Config{ListenAddr: ":0", WebhookPath: "/webhook", Branch: "main", APIKey: key}
 	diffSrc := &mockDiffSource{lastCheck: time.Now()} // diffs ready
-	gitSrc := &mockGitSource{}                         // git NOT ready (zero lastUpdate)
+	gitSrc := &mockGitSource{}                        // git NOT ready (zero lastUpdate)
 	srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)

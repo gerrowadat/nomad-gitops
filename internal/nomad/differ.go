@@ -271,18 +271,18 @@ type Differ struct {
 	lastNomadIndex uint64               // Raft index from the last successful List(); protected by mu
 	driftFirstSeen map[string]time.Time // key: driftKey(jobID, diffType); protected by mu
 
-	hclParseErrors   prometheus.Counter
-	hclFilesSkipped  prometheus.Counter
-	diffChecks       prometheus.Counter
+	hclParseErrors    prometheus.Counter
+	hclFilesSkipped   prometheus.Counter
+	diffChecks        prometheus.Counter
 	diffChecksSkipped prometheus.Counter
-	staleChecks      prometheus.Counter
-	redactedFields   prometheus.Counter
-	jobsSkippedBySel *prometheus.CounterVec
-	nomadAPIErrors   *prometheus.CounterVec
-	lastCheck        prometheus.Gauge
-	jobDiffs         *prometheus.GaugeVec
-	driftedJobs      *prometheus.GaugeVec
-	jobDriftSince    *prometheus.GaugeVec
+	staleChecks       prometheus.Counter
+	redactedFields    prometheus.Counter
+	jobsSkippedBySel  *prometheus.CounterVec
+	nomadAPIErrors    *prometheus.CounterVec
+	lastCheck         prometheus.Gauge
+	jobDiffs          *prometheus.GaugeVec
+	driftedJobs       *prometheus.GaugeVec
+	jobDriftSince     *prometheus.GaugeVec
 
 	updatesBlockedByPolicy         *prometheus.CounterVec
 	updatesBlockedCreationDisabled *prometheus.CounterVec
@@ -325,12 +325,12 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 
 	f := promauto.With(reg)
 	d := &Differ{
-		jobs:              jobs,
-		namespace:         cfg.NomadNamespace,
-		includeDeadJobs:   cfg.IncludeDeadJobs,
-		jobSelectorGlob:   cfg.JobSelectorGlob,
-		managedMetaPrefix: cfg.ManagedMetaPrefix,
-		redactSecrets:     cfg.RedactSecrets,
+		jobs:                 jobs,
+		namespace:            cfg.NomadNamespace,
+		includeDeadJobs:      cfg.IncludeDeadJobs,
+		jobSelectorGlob:      cfg.JobSelectorGlob,
+		managedMetaPrefix:    cfg.ManagedMetaPrefix,
+		redactSecrets:        cfg.RedactSecrets,
 		defaultPolicy:        defaultPolicy,
 		enableJobCreation:    cfg.EnableJobCreation,
 		applyMetaOnlyChanges: cfg.ApplyMetaOnlyChanges,
@@ -343,9 +343,9 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		flapGuard:            flapGuard,
 		allowRollback:        cfg.AllowRollback,
 		applyInterval:        applyInterval,
-		updateQueue:       NewUpdateQueue(),
-		applyCh:           make(chan struct{}, 1),
-		driftFirstSeen:    make(map[string]time.Time),
+		updateQueue:          NewUpdateQueue(),
+		applyCh:              make(chan struct{}, 1),
+		driftFirstSeen:       make(map[string]time.Time),
 		hclParseErrors: f.NewCounter(prometheus.CounterOpts{
 			Name: "nomad_botherer_hcl_parse_errors_total",
 			Help: "Total number of HCL files that failed to parse as Nomad job definitions.",

@@ -10,9 +10,9 @@ import (
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -354,10 +354,10 @@ func TestWatcher_ReadHCLFiles_Subdir(t *testing.T) {
 
 func TestWatcher_ReadHCLFiles_NonHCLIgnored(t *testing.T) {
 	repo := makeTestRepo(t, map[string]string{
-		"job.hcl":    `job "x" {}`,
-		"job.json":   `{}`,
-		"job.yml":    ``,
-		"README.md":  `# docs`,
+		"job.hcl":      `job "x" {}`,
+		"job.json":     `{}`,
+		"job.yml":      ``,
+		"README.md":    `# docs`,
 		"nested/x.hcl": `job "nested" {}`,
 	})
 	w := &Watcher{cfg: &config.Config{HCLDir: ""}, repo: repo}

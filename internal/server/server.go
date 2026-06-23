@@ -55,9 +55,9 @@ type Server struct {
 	mux       *http.ServeMux
 	handler   http.Handler // mux wrapped in securityHeaders
 
-	webhookMu               sync.RWMutex
-	lastWebhookSuccess      time.Time
-	lastWebhookFailure      time.Time
+	webhookMu          sync.RWMutex
+	lastWebhookSuccess time.Time
+	lastWebhookFailure time.Time
 
 	// Prometheus metrics
 	webhookEvents           *prometheus.CounterVec

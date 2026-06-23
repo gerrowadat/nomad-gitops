@@ -15,7 +15,7 @@ LDFLAGS := -X main.version=$(VERSION) \
 IMAGE     ?= ghcr.io/gerrowadat/$(BINARY)
 PLATFORMS := linux/amd64,linux/arm64
 
-.PHONY: all build install test test-regression test-regression-versions test-cover lint clean docker docker-push release-patch release-minor release-major version
+.PHONY: all build install test test-regression test-regression-versions test-cover fmt lint clean docker docker-push release-patch release-minor release-major version
 
 all: build
 
@@ -51,8 +51,18 @@ test-cover:
 	go test -race -timeout 60s -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-## lint: run go vet
+## fmt: format all Go code with gofmt
+fmt:
+	gofmt -w .
+
+## lint: check gofmt formatting, then run go vet
 lint:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "These files are not gofmt-clean (run 'make fmt'):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 	go vet ./...
 
 ## clean: remove build artefacts

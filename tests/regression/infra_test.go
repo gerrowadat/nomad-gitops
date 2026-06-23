@@ -551,9 +551,9 @@ type mockGitSource struct {
 	triggered bool
 }
 
-func (m *mockGitSource) Trigger()                           { m.triggered = true }
-func (m *mockGitSource) Status() (string, time.Time)        { return "deadbeef", time.Now() }
-func (m *mockGitSource) Ready() bool                        { return m.ready }
+func (m *mockGitSource) Trigger()                    { m.triggered = true }
+func (m *mockGitSource) Status() (string, time.Time) { return "deadbeef", time.Now() }
+func (m *mockGitSource) Ready() bool                 { return m.ready }
 
 // ── Full binary helpers ───────────────────────────────────────────────────────
 

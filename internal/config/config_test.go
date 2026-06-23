@@ -422,7 +422,6 @@ func TestLoadFromArgs_StalenessIndependent(t *testing.T) {
 	}
 }
 
-
 func TestLoadFromArgs_ManagedMetaPrefixDefault(t *testing.T) {
 	os.Unsetenv("MANAGED_META_PREFIX")
 	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})

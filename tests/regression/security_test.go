@@ -59,10 +59,10 @@ func TestSecurity_Webhook_InvalidHMAC(t *testing.T) {
 
 	for _, badSig := range []string{
 		"sha256=" + strings.Repeat("0", 64), // all-zero signature
-		"sha256=",                            // empty hex after prefix
-		wrongSig,                             // correct format, wrong secret
+		"sha256=",                           // empty hex after prefix
+		wrongSig,                            // correct format, wrong secret
 		"sha1=" + strings.Repeat("0", 40),   // wrong algorithm prefix
-		"invalid-format",                     // no prefix at all
+		"invalid-format",                    // no prefix at all
 	} {
 		t.Run(fmt.Sprintf("sig=%q", badSig[:min(len(badSig), 20)]), func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
@@ -377,4 +377,3 @@ func minimalPushPayload(branch string) []byte {
 		}
 	}`, branch))
 }
-

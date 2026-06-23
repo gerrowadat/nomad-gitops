@@ -10,10 +10,10 @@ import (
 
 type Config struct {
 	// Git
-	RepoURL       string
-	Branch        string
-	PollInterval  time.Duration
-	HCLDir        string
+	RepoURL              string
+	Branch               string
+	PollInterval         time.Duration
+	HCLDir               string
 	GitToken             string
 	GitSSHKeyPath        string
 	GitSSHKeyPass        string

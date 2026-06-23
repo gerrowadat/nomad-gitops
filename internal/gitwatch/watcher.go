@@ -14,9 +14,9 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -36,10 +36,10 @@ type Watcher struct {
 	triggerCh chan struct{}
 	onChange  func(commit string)
 
-	gitFetches          prometheus.Counter
-	gitFetchErrors      prometheus.Counter
-	gitLastUpdate       prometheus.Gauge
-	staleRefreshes      prometheus.Counter
+	gitFetches     prometheus.Counter
+	gitFetchErrors prometheus.Counter
+	gitLastUpdate  prometheus.Gauge
+	staleRefreshes prometheus.Counter
 }
 
 // New creates a Watcher that registers metrics into the default Prometheus registry.
