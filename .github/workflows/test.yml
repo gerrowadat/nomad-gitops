@@ -20,8 +20,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Vet
-        run: go vet ./...
+      - name: Lint (gofmt + vet)
+        run: make lint
 
       - name: Test
         run: go test -race -timeout 60s -coverprofile=coverage.out -covermode=atomic ./...
