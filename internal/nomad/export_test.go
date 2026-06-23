@@ -76,6 +76,11 @@ func FailedVersionsTagged(d *Differ) *prometheus.CounterVec {
 	return d.failedVersionsTagged
 }
 
+// NomadTokenRefreshes exposes the token-refresh counter.
+func NomadTokenRefreshes(d *Differ) *prometheus.CounterVec {
+	return d.nomadTokenRefreshes
+}
+
 // SpecFingerprint exposes the spec fingerprint helper for unit tests.
 func SpecFingerprint(job *nomadapi.Job, metaPrefix string) (string, error) {
 	return specFingerprint(job, metaPrefix)

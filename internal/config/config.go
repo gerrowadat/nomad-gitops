@@ -24,6 +24,16 @@ type Config struct {
 	NomadToken     string
 	NomadNamespace string
 
+	// NomadTokenFile is a path to a file containing the Nomad ACL token, re-read
+	// periodically so a rotating token (Nomad workload identity) stays current.
+	// When running under Nomad with workload identity, this is the preferred
+	// authentication method and is auto-detected at ${NOMAD_SECRETS_DIR}/nomad_token
+	// when no static token is set. A static --nomad-token is retained for manual
+	// running and testing.
+	NomadTokenFile string
+	// NomadTokenPollInterval is how often the token file is re-read for changes.
+	NomadTokenPollInterval time.Duration
+
 	// Server
 	ListenAddr    string
 	WebhookSecret string
@@ -113,7 +123,9 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.StringVar(&c.GitSSHKnownHostsFile, "git-ssh-known-hosts", envOrDefault("GIT_SSH_KNOWN_HOSTS", ""), "Path to known_hosts file for SSH host key verification (defaults to ~/.ssh/known_hosts; set to empty string to use system defaults)")
 
 	fs.StringVar(&c.NomadAddr, "nomad-addr", envOrDefault("NOMAD_ADDR", "http://127.0.0.1:4646"), "Nomad API address")
-	fs.StringVar(&c.NomadToken, "nomad-token", envOrDefault("NOMAD_TOKEN", ""), "Nomad ACL token")
+	fs.StringVar(&c.NomadToken, "nomad-token", envOrDefault("NOMAD_TOKEN", ""), "Nomad ACL token (static). Intended for manual running and testing; for a deployment under Nomad, prefer workload identity (see --nomad-token-file).")
+	fs.StringVar(&c.NomadTokenFile, "nomad-token-file", envOrDefault("NOMAD_TOKEN_FILE", ""), "Path to a file containing the Nomad ACL token, re-read periodically so a rotating workload-identity token stays current. Takes precedence over --nomad-token. When unset and no static token is given, ${NOMAD_SECRETS_DIR}/nomad_token is used automatically if present (Nomad workload identity).")
+	fs.DurationVar(&c.NomadTokenPollInterval, "nomad-token-poll-interval", envDurationOrDefault("NOMAD_TOKEN_POLL_INTERVAL", 30*time.Second), "How often to re-read the Nomad token file (--nomad-token-file) for a rotated token.")
 	fs.StringVar(&c.NomadNamespace, "nomad-namespace", envOrDefault("NOMAD_NAMESPACE", "default"), "Nomad namespace")
 
 	fs.StringVar(&c.ListenAddr, "listen-addr", envOrDefault("LISTEN_ADDR", ":8080"), "HTTP listen address")

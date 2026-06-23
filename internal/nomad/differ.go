@@ -3,6 +3,7 @@
 package nomad
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path"
@@ -185,7 +186,16 @@ type NomadJobsClient interface {
 
 // Differ runs periodic diff checks and stores the latest results.
 type Differ struct {
-	jobs              NomadJobsClient
+	jobs NomadJobsClient
+	// nomadClient is the concrete client behind jobs, retained so the token can
+	// be rotated via SetSecretID. nil in tests (which inject a mock jobs client).
+	nomadClient *nomadapi.Client
+	// tokenFilePath, when non-empty, is the Nomad token file the refresher
+	// re-reads; tokenPollInterval is how often; initialToken is the value read
+	// at startup, used as the refresher's baseline.
+	tokenFilePath     string
+	tokenPollInterval time.Duration
+	initialToken      string
 	namespace         string
 	includeDeadJobs   bool
 	jobSelectorGlob   string
@@ -286,6 +296,7 @@ type Differ struct {
 	updatesBlockedKnownFailed      *prometheus.CounterVec
 	rollbacks                      *prometheus.CounterVec
 	failedVersionsTagged           *prometheus.CounterVec
+	nomadTokenRefreshes            *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -431,6 +442,10 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Name: "nomad_botherer_failed_versions_tagged_total",
 			Help: "Failed job versions tagged in Nomad by the flap-guard tag mode (--flap-guard=tag) so the block survives version GC.",
 		}, []string{"job"}),
+		nomadTokenRefreshes: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_nomad_token_refreshes_total",
+			Help: "Re-reads of the Nomad token file (--nomad-token-file / workload identity), by result: rotated (the token changed and was applied), error (the file could not be read; previous token kept).",
+		}, []string{"result"}),
 	}
 
 	// Pre-populate Vec metrics for all finite label values so they appear in
@@ -449,24 +464,72 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	for _, dt := range []string{string(DiffTypeModified), string(DiffTypeMissingFromNomad), string(DiffTypeMissingFromHCL)} {
 		d.driftedJobs.WithLabelValues(dt)
 	}
+	for _, r := range []string{"rotated", "error"} {
+		d.nomadTokenRefreshes.WithLabelValues(r)
+	}
 
 	return d
 }
 
 // NewDiffer creates a Differ backed by a real Nomad API client.
 func NewDiffer(cfg *config.Config) (*Differ, error) {
+	token, watchPath, err := resolveNomadToken(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	nomadCfg := nomadapi.DefaultConfig()
 	nomadCfg.Address = cfg.NomadAddr
-	if cfg.NomadToken != "" {
-		nomadCfg.SecretID = cfg.NomadToken
-	}
+	// Set the token explicitly (possibly to "") so it always reflects our
+	// resolution and overrides whatever DefaultConfig read from NOMAD_TOKEN.
+	nomadCfg.SecretID = token
 
 	client, err := nomadapi.NewClient(nomadCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating nomad client: %w", err)
 	}
 
-	return newDifferBase(client.Jobs(), cfg, prometheus.DefaultRegisterer), nil
+	switch {
+	case watchPath != "":
+		slog.Info("Authenticating to Nomad with a token file (workload identity)",
+			"token_file", watchPath, "refresh_interval", cfg.NomadTokenPollInterval)
+	case token != "":
+		slog.Info("Authenticating to Nomad with a static token")
+	default:
+		slog.Info("No Nomad token configured; using anonymous access (works only when ACLs are disabled)")
+	}
+
+	d := newDifferBase(client.Jobs(), cfg, prometheus.DefaultRegisterer)
+	d.nomadClient = client
+	d.tokenFilePath = watchPath
+	d.tokenPollInterval = cfg.NomadTokenPollInterval
+	d.initialToken = token
+	return d, nil
+}
+
+// RunTokenRefresher keeps the Nomad token current when it is sourced from a file
+// (workload identity), re-reading it every --nomad-token-poll-interval and
+// applying a rotated token to the client. It is a no-op for a static token or
+// no token, and blocks until ctx is cancelled.
+func (d *Differ) RunTokenRefresher(ctx context.Context) {
+	if d.tokenFilePath == "" || d.nomadClient == nil {
+		return
+	}
+	interval := d.tokenPollInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	refreshTokenFile(ctx, d.tokenFilePath, interval, d.initialToken,
+		func(tok string) {
+			d.nomadClient.SetSecretID(tok)
+			d.nomadTokenRefreshes.WithLabelValues("rotated").Inc()
+			slog.Info("Applied a rotated Nomad token from the token file", "token_file", d.tokenFilePath)
+		},
+		func(err error) {
+			d.nomadTokenRefreshes.WithLabelValues("error").Inc()
+			slog.Warn("Could not re-read the Nomad token file; keeping the previous token", "token_file", d.tokenFilePath, "err", err)
+		},
+	)
 }
 
 // NewWithClient creates a Differ with a custom jobs client, intended for tests.

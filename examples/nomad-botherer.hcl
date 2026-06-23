@@ -12,7 +12,23 @@
 job "nomad-botherer" {
   # Run in the same namespace as the jobs you want to watch. nomad-botherer
   # does not need elevated privileges: read access (list-jobs, read-job) is
-  # all that is required.
+  # all that is required for detection; add submit-job for the apply side.
+  #
+  # On an ACL-enabled cluster, grant that access via workload identity (see the
+  # identity {} block on the task below). Once, after first submitting the job,
+  # bind an ACL policy to this job's identity:
+  #
+  #   # nomad-botherer-policy.hcl
+  #   namespace "default" {
+  #     capabilities = ["list-jobs", "read-job", "submit-job"]
+  #   }
+  #
+  #   nomad acl policy apply \
+  #     -namespace default -job nomad-botherer \
+  #     nomad-botherer nomad-botherer-policy.hcl
+  #
+  # No token to create, distribute, or rotate. (Drop submit-job for a
+  # detection-only deployment.)
   namespace   = "default"
   datacenters = ["dc1"]
   type        = "service"
@@ -50,6 +66,18 @@ job "nomad-botherer" {
       config {
         image = "ghcr.io/gerrowadat/nomad-botherer:latest"
         ports = ["http"]
+      }
+
+      # ── Nomad authentication via workload identity ──────────────────────────
+      #
+      # Exposes this task's own Nomad identity token as a file at
+      # ${NOMAD_SECRETS_DIR}/nomad_token, which Nomad rotates before it expires.
+      # nomad-botherer auto-detects and re-reads that file — no NOMAD_TOKEN to
+      # set or rotate. Pair this with the ACL policy shown in the job comment
+      # above. Do NOT set `env = true` here: an env token is captured once at
+      # task start and never refreshed, so it would eventually expire.
+      identity {
+        file = true
       }
 
       env {
@@ -95,15 +123,16 @@ job "nomad-botherer" {
         # is reachable on the loopback address.
         NOMAD_ADDR = "http://127.0.0.1:4646"
 
-        # ACL token. Required when ACLs are enabled on the cluster.
-        # Minimum required capabilities for the token's policy:
+        # Authentication is handled by workload identity (the identity {} block
+        # below) plus the ACL policy described in the job comment above, so no
+        # token needs to be set here.
         #
-        #   namespace "default" {
-        #     capabilities = ["list-jobs", "read-job"]
-        #   }
-        #
-        # Use a Nomad Variable or Vault secret rather than hardcoding here.
-        # NOMAD_TOKEN = ""
+        # For manual/testing runs outside Nomad you can instead pass a static
+        # token (it does not refresh, so it is unsuitable for long-running use
+        # with short-lived tokens):
+        #   NOMAD_TOKEN = ""
+        # or point at a token file that nomad-botherer re-reads:
+        #   NOMAD_TOKEN_FILE = "/secrets/nomad_token"
 
         # Namespace to watch. Defaults to "default".
         # NOMAD_NAMESPACE = "default"

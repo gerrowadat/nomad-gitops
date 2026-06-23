@@ -24,6 +24,9 @@ Three kinds of drift are tracked:
 - [Design and prior art](#design-and-prior-art)
 - [How it works](#how-it-works)
 - [Job selection](#job-selection)
+- [Authenticating to Nomad](#authenticating-to-nomad)
+  - [Workload identity setup (recommended)](#workload-identity-setup-recommended)
+  - [Static token (manual / testing)](#static-token-manual--testing)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -74,8 +77,12 @@ is a ready-to-use job definition with every configuration option commented.
    including how to read secrets from a Nomad Variable rather than hardcoding
    them.
 
-4. If your cluster has ACLs enabled, set `NOMAD_TOKEN` to a token with
-   `list-jobs` and `read-job` capabilities on the target namespace.
+4. If your cluster has ACLs enabled, give the job access to the Nomad API. The
+   recommended way is **workload identity** — no token to manage or rotate. The
+   example job already includes the `identity { file = true }` block; you just
+   bind an ACL policy to it. See [Authenticating to Nomad](#authenticating-to-nomad)
+   for the two commands. (A static `NOMAD_TOKEN` still works and is fine for
+   testing.)
 
 5. Submit the job:
    ```bash
@@ -246,6 +253,89 @@ If both `--job-selector-glob` and `--managed-meta-prefix` are empty, no jobs are
 
 ---
 
+## Authenticating to Nomad
+
+When the cluster has ACLs enabled, nomad-botherer needs a token to call the
+Nomad API. It picks one from three sources, in this order:
+
+1. **A token file** (`--nomad-token-file` / `NOMAD_TOKEN_FILE`) — **preferred**.
+   The file is re-read every `--nomad-token-poll-interval` (default `30s`), so a
+   rotating token stays current. This is how Nomad **workload identity** works:
+   when nomad-botherer runs as a Nomad task with `identity { file = true }`,
+   Nomad writes the task's own identity token to `${NOMAD_SECRETS_DIR}/nomad_token`
+   and rotates it before it expires. That path is **auto-detected** when no token
+   is otherwise configured, so a correctly set-up job needs no token settings at
+   all.
+2. **A static token** (`--nomad-token` / `NOMAD_TOKEN`) — for manual running and
+   testing. It is never re-read, so it is unsuitable for a long-running
+   deployment with short-lived tokens.
+3. **None** — anonymous access, which works only when the cluster has ACLs
+   disabled.
+
+A token file takes precedence over a static token; the static token wins over
+auto-detection (so `--nomad-token` still works for testing inside a task). The
+chosen source is logged at startup.
+
+### Workload identity setup (recommended)
+
+Running under Nomad, give the job API access without managing any token:
+
+1. **Expose the identity token to the task.** The example job
+   ([`examples/nomad-botherer.hcl`](examples/nomad-botherer.hcl)) already does
+   this:
+
+   ```hcl
+   task "nomad-botherer" {
+     identity {
+       file = true   # writes the token to ${NOMAD_SECRETS_DIR}/nomad_token
+     }
+     # ...
+   }
+   ```
+
+   Do **not** also set `env = true` and read `NOMAD_TOKEN` from the environment:
+   the env value is captured once at task start and never refreshed, so it will
+   eventually expire. nomad-botherer auto-detects the file and re-reads it.
+
+2. **Bind an ACL policy to the workload.** Write a policy with the capabilities
+   nomad-botherer needs, then attach it to the job's workload identity:
+
+   ```hcl
+   # nomad-botherer-policy.hcl
+   namespace "default" {
+     # read-job + list-jobs: detect drift. submit-job: plan, register,
+     # deregister, and revert (the apply side). Drop submit-job for a
+     # detection-only deployment.
+     capabilities = ["list-jobs", "read-job", "submit-job"]
+   }
+   ```
+
+   ```bash
+   nomad acl policy apply \
+     -namespace default -job nomad-botherer \
+     nomad-botherer nomad-botherer-policy.hcl
+   ```
+
+   The `-job nomad-botherer` flag ties the policy to that job's workload
+   identity, so any allocation of the job authenticates with exactly these
+   capabilities — no token to create, distribute, or rotate. Add
+   `-group`/`-task` flags to narrow it further if you like.
+
+For a detection-only deployment, omit `submit-job`. To watch more than one
+namespace, grant the capabilities on each (or use a wildcard namespace policy).
+
+### Static token (manual / testing)
+
+Running the binary by hand, pass a token the usual way:
+
+```bash
+NOMAD_TOKEN=$(nomad acl token self -t …) ./nomad-botherer --repo-url … 
+# or
+./nomad-botherer --nomad-token <token> --repo-url …
+```
+
+---
+
 ## Installation
 
 ### From source
@@ -316,7 +406,9 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--git-ssh-key-password` | `GIT_SSH_KEY_PASSWORD` | | SSH key passphrase |
 | `--git-ssh-known-hosts` | `GIT_SSH_KNOWN_HOSTS` | `~/.ssh/known_hosts` | Path to known_hosts file for SSH host key verification; required when using SSH auth. Defaults to the system known_hosts locations. Omit to allow the default search, or set explicitly to a specific file. |
 | `--nomad-addr` | `NOMAD_ADDR` | `http://127.0.0.1:4646` | Nomad API address |
-| `--nomad-token` | `NOMAD_TOKEN` | | Nomad ACL token |
+| `--nomad-token` | `NOMAD_TOKEN` | | Nomad ACL token (static). For manual running and testing. Does not refresh; under Nomad prefer workload identity. See [Authenticating to Nomad](#authenticating-to-nomad). |
+| `--nomad-token-file` | `NOMAD_TOKEN_FILE` | | Path to a file holding the Nomad ACL token, re-read periodically so a rotating workload-identity token stays current. Takes precedence over `--nomad-token`. Auto-detected at `${NOMAD_SECRETS_DIR}/nomad_token` when no static token is set. See [Authenticating to Nomad](#authenticating-to-nomad). |
+| `--nomad-token-poll-interval` | `NOMAD_TOKEN_POLL_INTERVAL` | `30s` | How often to re-read `--nomad-token-file` for a rotated token. |
 | `--nomad-namespace` | `NOMAD_NAMESPACE` | `default` | Nomad namespace |
 | `--listen-addr` | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `--webhook-secret` | `WEBHOOK_SECRET` | | GitHub webhook HMAC secret |
@@ -812,6 +904,7 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_rollbacks_total` | Counter | `job`, `result` | Active-rollback outcomes: `queued` (a revert was enqueued), `deferred_auto_revert` (stood down because the job sets `auto_revert`), `no_stable_version` (no earlier stable version to revert to). |
 | `nomad_botherer_failed_versions_tagged_total` | Counter | `job` | Failed versions tagged by `--flap-guard=tag` so the block survives Nomad's version GC. |
 | `nomad_botherer_job_updates_total` (operation=`REVERT`) | Counter | `operation`, `status` | Active rollbacks reaching a terminal state. See [Rollback](#rollback-recovering-from-a-bad-change). |
+| `nomad_botherer_nomad_token_refreshes_total` | Counter | `result` | Re-reads of the Nomad token file (workload identity): `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). Only moves when `--nomad-token-file` is in use. See [Authenticating to Nomad](#authenticating-to-nomad). |
 
 #### Git tracking
 

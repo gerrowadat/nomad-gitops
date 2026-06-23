@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **Nomad workload identity for authentication.** When nomad-botherer runs as a
+  Nomad job, it can now authenticate to the Nomad API with the task's own
+  rotating workload-identity token instead of a static ACL token. Set
+  `identity { file = true }` on the task and bind an ACL policy to the job's
+  identity; nomad-botherer auto-detects the token at
+  `${NOMAD_SECRETS_DIR}/nomad_token`, re-reads it every
+  `--nomad-token-poll-interval` (default `30s`), and applies a rotated token to
+  the live client without a restart. New flags `--nomad-token-file` /
+  `NOMAD_TOKEN_FILE` and `--nomad-token-poll-interval` /
+  `NOMAD_TOKEN_POLL_INTERVAL`. A token file takes precedence over a static
+  `--nomad-token`, which is retained for manual running and testing. New counter
+  `nomad_botherer_nomad_token_refreshes_total{result}`. See the README
+  "Authenticating to Nomad" section and `docs/design/nomad-auth.md`; the example
+  job in `examples/nomad-botherer.hcl` now uses workload identity.
+
 ## v0.8.0 — 2026-06-20
 
 Verified against Nomad 1.9.6, 1.10.5, 1.11.3, and 2.0.2 (full regression

@@ -162,6 +162,10 @@ func main() {
 	// idles unless jobs opt in via meta or the default policy is raised.
 	go differ.RunApplier(ctx)
 
+	// Token refresher keeps a file-sourced Nomad token (workload identity)
+	// current. No-op for a static token or no token.
+	go differ.RunTokenRefresher(ctx)
+
 	srv := server.New(cfg, differ, watcher, server.BuildInfo{
 		Version:   version,
 		Commit:    commit,

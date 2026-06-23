@@ -109,6 +109,7 @@ func TestLoadFromArgs_Defaults(t *testing.T) {
 	// Clear any env vars that could affect defaults.
 	for _, k := range []string{
 		"GIT_REPO_URL", "GIT_BRANCH", "NOMAD_ADDR", "NOMAD_NAMESPACE",
+		"NOMAD_TOKEN", "NOMAD_TOKEN_FILE", "NOMAD_TOKEN_POLL_INTERVAL",
 		"LISTEN_ADDR", "WEBHOOK_PATH", "LOG_LEVEL", "POLL_INTERVAL", "DIFF_INTERVAL",
 		"JOB_SELECTOR_GLOB", "MANAGED_META_PREFIX",
 	} {
@@ -145,6 +146,56 @@ func TestLoadFromArgs_Defaults(t *testing.T) {
 	}
 	if cfg.DiffInterval != time.Minute {
 		t.Errorf("DiffInterval: want 1m, got %v", cfg.DiffInterval)
+	}
+	if cfg.NomadToken != "" {
+		t.Errorf("NomadToken default: want empty, got %q", cfg.NomadToken)
+	}
+	if cfg.NomadTokenFile != "" {
+		t.Errorf("NomadTokenFile default: want empty, got %q", cfg.NomadTokenFile)
+	}
+	if cfg.NomadTokenPollInterval != 30*time.Second {
+		t.Errorf("NomadTokenPollInterval default: want 30s, got %v", cfg.NomadTokenPollInterval)
+	}
+}
+
+func TestLoadFromArgs_NomadTokenFlags(t *testing.T) {
+	for _, k := range []string{"NOMAD_TOKEN", "NOMAD_TOKEN_FILE", "NOMAD_TOKEN_POLL_INTERVAL"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--nomad-token", "static-abc",
+		"--nomad-token-file", "/secrets/nomad_token",
+		"--nomad-token-poll-interval", "15s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NomadToken != "static-abc" {
+		t.Errorf("NomadToken: want static-abc, got %q", cfg.NomadToken)
+	}
+	if cfg.NomadTokenFile != "/secrets/nomad_token" {
+		t.Errorf("NomadTokenFile: want /secrets/nomad_token, got %q", cfg.NomadTokenFile)
+	}
+	if cfg.NomadTokenPollInterval != 15*time.Second {
+		t.Errorf("NomadTokenPollInterval: want 15s, got %v", cfg.NomadTokenPollInterval)
+	}
+}
+
+func TestLoadFromArgs_NomadTokenEnvVars(t *testing.T) {
+	os.Setenv("NOMAD_TOKEN_FILE", "/run/nomad_token")
+	os.Setenv("NOMAD_TOKEN_POLL_INTERVAL", "1m")
+	t.Cleanup(func() {
+		for _, k := range []string{"NOMAD_TOKEN_FILE", "NOMAD_TOKEN_POLL_INTERVAL"} {
+			os.Unsetenv(k)
+		}
+	})
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NomadTokenFile != "/run/nomad_token" || cfg.NomadTokenPollInterval != time.Minute {
+		t.Errorf("nomad token env vars not honoured: file=%q poll=%v", cfg.NomadTokenFile, cfg.NomadTokenPollInterval)
 	}
 }
 
