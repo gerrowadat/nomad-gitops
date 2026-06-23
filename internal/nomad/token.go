@@ -2,7 +2,9 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -66,16 +68,22 @@ func resolveNomadToken(cfg *config.Config) (token, watchPath string, err error) 
 }
 
 // defaultWorkloadTokenPath returns ${NOMAD_SECRETS_DIR}/nomad_token when that
-// file exists, else "". NOMAD_SECRETS_DIR is set for every Nomad task, but the
-// token file is only present when the job opts in with `identity { file = true }`,
-// so the existence check distinguishes "workload identity configured" from not.
+// file might be present, else "". NOMAD_SECRETS_DIR is set for every Nomad
+// task, but the token file is only written when the job opts in with
+// `identity { file = true }`, so a definitively-absent file means "workload
+// identity not configured" and we fall through to the other sources.
+//
+// Only the not-exist case is suppressed: any other stat error (permissions, IO)
+// means the file is probably there but unreadable, which on an ACL-enabled
+// cluster should surface as a startup error rather than silently degrade to
+// anonymous access. Returning the path lets readTokenFile report it.
 func defaultWorkloadTokenPath() string {
 	dir := os.Getenv("NOMAD_SECRETS_DIR")
 	if dir == "" {
 		return ""
 	}
 	p := filepath.Join(dir, wiTokenFilename)
-	if _, err := os.Stat(p); err != nil {
+	if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
 		return ""
 	}
 	return p

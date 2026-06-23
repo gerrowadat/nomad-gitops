@@ -904,7 +904,7 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_rollbacks_total` | Counter | `job`, `result` | Active-rollback outcomes: `queued` (a revert was enqueued), `deferred_auto_revert` (stood down because the job sets `auto_revert`), `no_stable_version` (no earlier stable version to revert to). |
 | `nomad_botherer_failed_versions_tagged_total` | Counter | `job` | Failed versions tagged by `--flap-guard=tag` so the block survives Nomad's version GC. |
 | `nomad_botherer_job_updates_total` (operation=`REVERT`) | Counter | `operation`, `status` | Active rollbacks reaching a terminal state. See [Rollback](#rollback-recovering-from-a-bad-change). |
-| `nomad_botherer_nomad_token_refreshes_total` | Counter | `result` | Re-reads of the Nomad token file (workload identity): `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). Only moves when `--nomad-token-file` is in use. See [Authenticating to Nomad](#authenticating-to-nomad). |
+| `nomad_botherer_nomad_token_refreshes_total` | Counter | `result` | Re-reads of the Nomad token file (workload identity): `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). Only moves when a token file is in use — an explicit `--nomad-token-file` or the auto-detected `${NOMAD_SECRETS_DIR}/nomad_token`. See [Authenticating to Nomad](#authenticating-to-nomad). |
 
 #### Git tracking
 
