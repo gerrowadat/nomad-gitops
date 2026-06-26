@@ -13,7 +13,7 @@ jobs:
       contents: write        # update wiki with coverage badge + report
       pull-requests: write   # post coverage diff comments on PRs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
