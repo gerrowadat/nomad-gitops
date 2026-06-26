@@ -486,6 +486,52 @@ func TestApplyE2E_ExistingDrift_AtStartup(t *testing.T) {
 	})
 }
 
+// TestApplyE2E_PolicyPromotion verifies issue #69 against real git history:
+// widening gitops_update_policy (image-only → full) defers drift that
+// accumulated under the stricter policy, exactly as opt-in defers pre-existing
+// drift. The job is established managed+image-only with a non-image (args)
+// drift that image-only correctly held back; a later commit flips the policy to
+// full. The binary starts at HEAD so the parent commit (holding image-only) is
+// read from real git history via the policy regexp.
+func TestApplyE2E_PolicyPromotion(t *testing.T) {
+	run := func(t *testing.T, applyExisting bool) string {
+		repoURL, workDir, branch := createGitRepo(t)
+		jobID := uniqueJobID("policy-promo")
+
+		// Running job: args ["600"].
+		registerJobHCL(t, testJobHCL(jobID))
+		waitForJobStatus(t, jobID, "running", 60*time.Second)
+
+		// Commit 1 (established): managed + image-only, args ["999"]. The args
+		// change is non-image, so image-only defers it — it is live drift held
+		// back by policy.
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLWithPolicy(jobID, "image-only")})
+		// Commit 2 (promotion): same args, policy widened to full. HEAD's parent
+		// (commit 1) holds image-only.
+		commitToGit(t, workDir, map[string]string{jobID + ".hcl": testJobHCLWithPolicy(jobID, "full")})
+
+		extra := []string{"--repo-url=" + repoURL, "--branch=" + branch, "--apply-interval=1s"}
+		if applyExisting {
+			extra = append(extra, "--apply-existing-drift")
+		}
+		startBotherer(t, extra...)
+		return jobID
+	}
+
+	t.Run("default defers drift accumulated under image-only", func(t *testing.T) {
+		jobID := run(t, false)
+		time.Sleep(8 * time.Second)
+		if args := jobTaskArgs(t, jobID); len(args) != 1 || args[0] != "600" {
+			t.Errorf("non-image drift deferred under image-only must not apply on promotion to full by default; args are now %v", args)
+		}
+	})
+
+	t.Run("flag applies the accumulated drift on promotion", func(t *testing.T) {
+		jobID := run(t, true)
+		waitForTaskArgs(t, jobID, "999", 60*time.Second)
+	})
+}
+
 // TestDeregisterE2E_RemovedFromRepo verifies that a job removed from the repo
 // entirely (HCL deleted) while still running is deregistered only with
 // --enable-deregister, and only after the grace period. By default it is left

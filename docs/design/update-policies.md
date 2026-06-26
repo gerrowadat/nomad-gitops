@@ -2,7 +2,8 @@
 
 **Status**: implemented — v0.5.0 (`full`/`image-only`/`none`, the diff
 classifier), with later refinements (meta-only handling, pre-existing-drift
-gate) in v0.6.0. See the CHANGELOG.
+gate) in v0.6.0, and the policy-widening ruling (issue #69) after v0.8.0.
+See the CHANGELOG.
 **Date**: 2026-06-11 (proposed) · moved to design 2026-06-17
 
 > This records the thinking behind the shipped policy model. One notable
@@ -98,6 +99,75 @@ The policy is read from the *HCL side* (the parsed job in Git) when both
 sides exist, because Git is the source of truth for intent. For
 `missing_from_hcl` there is no HCL; the live job's meta is all we have, which
 is consistent with the deregister guard already reading the live meta.
+
+---
+
+## Changing a policy: drift that accumulated under the stricter policy (issue #69)
+
+When a managed job's `gitops_update_policy` is widened — `image-only` → `full`,
+or `none` → either — the next reconcile could apply drift that was **live the
+whole time but deferred by the stricter policy**. The motivating case: an
+`image-only` job has a memory bump committed earlier and sitting unapplied
+(correctly held by `image-only`); the operator then switches it to `full`. Should
+the memory change ride along with the policy flip?
+
+**Ruling: no, not by default. A policy widening is treated exactly like a job's
+opt-in.** The reconciler already has a "pre-existing drift" gate
+(`--apply-existing-drift`, default off) for the enablement case: when a job gains
+`gitops_managed`, drift that pre-dates the opt-in is not retroactively applied;
+only changes committed *after* the opt-in apply. A policy widening is the same
+kind of event — it brings drift *into scope to apply* — so it gets the same
+treatment and the same switch.
+
+This was chosen over "apply all current drift on the switch" (the v0.8.0
+behaviour) because:
+
+- **Consistency.** Enablement and promotion are both "scope-widening" events;
+  having them behave differently is surprising and was never a deliberate
+  decision. One rule, one flag.
+- **Least astonishment.** Changing a policy expresses intent about *future*
+  reconciliation, not "deploy the backlog now." Bundling an older,
+  deliberately-deferred change into the same reconcile as the policy flip can
+  ship a change at a moment the operator didn't choose.
+- **It's free of new state.** The signal is git history, which is already used
+  for the opt-in gate.
+
+### How it is decided
+
+Generalise the opt-in test from "was the managed tag present at the parent
+commit?" to "**would this diff have been applied under the job's effective scope
+at the parent commit?**" A diff is pre-existing iff it would *not* have been
+applied at the parent (the job was unmanaged there, or the parent's policy did
+not cover this diff's class) but the scope at HEAD *does* cover it. Both inputs
+come from the parent version of the job's HCL file (`HistorySource.FileAtParentOf`):
+the managed tag via the existing regexp, the policy via a second regexp reading
+`<prefix>_update_policy`. `policyPermits(policy, class)` mirrors the apply-time
+policy gate.
+
+Worked outcomes (default `--apply-existing-drift=false`):
+
+| parent policy | HEAD policy | diff class | applied at HEAD? |
+|---|---|---|---|
+| image-only | full | other (e.g. memory) | **deferred** (came into scope) |
+| image-only | full | image | applied (was already in scope) |
+| none | full / image-only | any | **deferred** |
+| full | full | any | applied (no widening) |
+| full | image-only | other | n/a — blocked by HEAD policy anyway |
+
+With `--apply-existing-drift=true`, every "deferred" above applies immediately.
+
+### Boundaries
+
+- A change bundled into the *same commit* as the widening is deferred (it did not
+  predate the widening, but neither was it committed after it) — consistent with
+  the opt-in rule, where drift in the opt-in commit is deferred and only later
+  commits apply.
+- A managed-meta-only diff (the policy flip with no other drift) is governed by
+  the meta-only gate, not this one.
+- The global `--default-update-policy` flag is not a per-job git change, so
+  changing *that* is not detected as a per-job widening; only the per-job meta
+  key's history is consulted.
+- Glob-selected jobs have no opt-in moment and are exempt, as before.
 
 ---
 

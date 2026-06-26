@@ -22,6 +22,24 @@
   ACL-enabled Nomad: static token vs anonymous denial, token-file and
   auto-detected workload-identity auth, and live token rotation.
 
+### Changed
+
+- **A `gitops_update_policy` widening now defers drift that accumulated under the
+  stricter policy, the same way a job's opt-in does (issue #69).** Previously,
+  switching a job `image-only` → `full` (or `none` → either) applied *all* current
+  drift on the next reconcile — including non-image changes committed earlier and
+  deliberately deferred while the job was `image-only`. That is now treated as
+  pre-existing drift and held by default, exactly like drift that pre-dates a
+  job gaining the `gitops_managed` tag: changing scope expresses intent about
+  future reconciliation, not "deploy the backlog now". The existing
+  `--apply-existing-drift` / `APPLY_EXISTING_DRIFT` flag (default off) governs
+  both cases — set it to restore the previous apply-everything-on-promotion
+  behaviour. Drift on a job whose scope did not change reconciles normally. The
+  decision is git-history-derived (no new state); surfaced as before by
+  `apply_action=blocked_preexisting_drift` and
+  `nomad_botherer_updates_blocked_preexisting_total`. See the README
+  "Drift that pre-dates a scope change" section and `docs/design/update-policies.md`.
+
 ## v0.8.0 — 2026-06-20
 
 Verified against Nomad 1.9.6, 1.10.5, 1.11.3, and 2.0.2 (full regression

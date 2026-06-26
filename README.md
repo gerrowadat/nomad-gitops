@@ -422,7 +422,7 @@ Every flag has a corresponding environment variable. Environment variables are r
 | `--apply-interval` | `APPLY_INTERVAL` | `10s` | Fallback cadence of the apply loop; enqueued updates are also applied immediately. |
 | `--apply-meta-only-changes` | `APPLY_META_ONLY_CHANGES` | `false` | Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. `gitops_managed`). Off by default — re-registering a running job just to push these keys is disruptive and unnecessary; they ride along the next real update. |
 | `--count-meta-only-changes` | `COUNT_META_ONLY_CHANGES` | `false` | Count a managed-meta-only diff as drift (surface it on `/diffs`, `/healthz`, and the drift metrics). Off by default so these expected differences do not trigger alerts. |
-| `--apply-existing-drift` | `APPLY_EXISTING_DRIFT` | `false` | When a job gains the managed meta tag while nomad-botherer is running, apply drift that already existed at that moment. Off by default — opting a job in does not retroactively mutate it; only changes committed after opt-in apply. Jobs already managed at startup reconcile normally. |
+| `--apply-existing-drift` | `APPLY_EXISTING_DRIFT` | `false` | When a change widens a job's scope, apply drift that already existed at that moment. Scope widens two ways, treated identically: a job gains the managed meta tag (enablement), or its update policy is widened to cover drift it was deferring (e.g. `image-only` → `full`). Off by default — a scope change does not retroactively mutate the job; only changes committed after it apply. See [Drift that pre-dates a scope change](#drift-that-pre-dates-a-scope-change-opt-in-or-policy-widening). |
 | `--enable-deregister` | `ENABLE_DEREGISTER` | `false` | Deregister jobs removed from the repo entirely (HCL file deleted or job renamed) while still running. Off by default. Only acts on a live job carrying `gitops_managed=true` whose effective policy is `full`, and only after it has been orphaned for `--deregister-grace`. Removing only the tag (job still in the repo) never deregisters. See [Deregistration](#deregistration-jobs-removed-from-the-repo). |
 | `--deregister-purge` | `DEREGISTER_PURGE` | `false` | Purge the job from Nomad's state immediately instead of a graceful stop (queryable, GC'd later). |
 | `--deregister-grace` | `DEREGISTER_GRACE` | `5m` | How long a job must be continuously orphaned before being deregistered. Absorbs transient renames and mid-edit commits. |
@@ -536,31 +536,46 @@ and `--count-meta-only-changes` makes it count as drift. A diff that mixes a
 meta-key change with any *other* change is a normal diff and is unaffected by
 these flags.
 
-### Opting in a job that already drifted
+### Drift that pre-dates a scope change (opt-in or policy widening)
 
-When you add the meta tag to a job that *already* differs from its HCL — say
-you bumped its image in Git a while ago, and only now add `gitops_managed` —
-that drift is **pre-existing**: it was there before the job entered scope.
-By default nomad-botherer does **not** apply it. Opting a job into management
-should not, on its own, trigger a mutation based on drift you may not have
-reviewed; only changes committed *after* the tag is added are applied.
+A change can bring drift that was already there *into scope* to apply. Two such
+changes are treated **identically**:
 
-Set `--apply-existing-drift` to apply pre-existing drift at opt-in instead —
-then the job converges to its HCL as soon as the tag lands.
+- **Enablement** — you add `gitops_managed` to a job that already differs from
+  its HCL (say you bumped its image in Git a while ago, and only now opt it in).
+- **Policy widening** — you widen a managed job's `gitops_update_policy` to cover
+  drift the stricter policy had been deferring. The motivating case: an
+  `image-only` job has a non-image change (e.g. a memory bump) sitting unapplied;
+  you then switch it to `full`. The memory change was live drift the whole time,
+  merely held back by `image-only`.
+
+In both cases the drift is **pre-existing**, and by default nomad-botherer does
+**not** apply it. Changing a job's scope expresses intent about *future*
+reconciliation, not "deploy the backlog now": it should not, on its own, trigger
+a mutation from drift you may not have intended to ship at that moment. Only
+changes committed *after* the scope change apply.
+
+Set `--apply-existing-drift` to apply pre-existing drift at the scope change
+instead — then the job converges to its HCL as soon as the change lands. This is
+one switch for both cases, deliberately, so enablement and policy promotion never
+diverge (see [issue #69](https://github.com/gerrowadat/nomad-botherer/issues/69)).
 
 The decision is made from **git history**, so it holds the same whether the
-tag is added while nomad-botherer is running or before it starts (a fresh
-start or a restart). For a job's HCL file, the rule is: if the managed tag
-was present in the commit *before* HEAD, the job was already managed and its
-drift reconciles normally; if the tag was *added* in the HEAD commit (the
-file existed before without it), the drift pre-dates opt-in and is held. A
-file created with the tag in a single commit is not a retroactive opt-in —
-the tag and the spec arrived together — so it applies. Because the signal is
-git-derived rather than remembered, a restart never freezes an
-already-managed cluster. Jobs selected by `--job-selector-glob` are always in
-scope and have no opt-in moment, so this gate never applies to them. The
-freeze is counted in `nomad_botherer_updates_blocked_preexisting_total{job}`,
-and each held diff is shown on `/diffs` and the API with its reason (see
+change lands while nomad-botherer is running or before it starts (a fresh start
+or a restart). For a job's HCL file at HEAD, the rule is: a diff is pre-existing
+if it would **not** have been applied under the job's effective scope in the
+commit *before* HEAD — the job was unmanaged there, or its policy there did not
+cover this diff's class — but the scope at HEAD does cover it. A job whose tag
+and policy were already established before HEAD reconciles normally; a file
+created with the tag in a single commit is not a retroactive opt-in (the tag and
+spec arrived together) so it applies. Because the signal is git-derived rather
+than remembered, a restart never freezes an already-managed cluster. Jobs
+selected by `--job-selector-glob` are always in scope and have no opt-in moment,
+so this gate never applies to them. (The global `--default-update-policy` is not
+a per-job git change, so changing *that* flag is not detected as a per-job scope
+widening.) The freeze is counted in
+`nomad_botherer_updates_blocked_preexisting_total{job}`, and each held diff is
+shown on `/diffs` and the API with its reason (see
 [Why a diff is or is not applied](#why-a-diff-is-or-is-not-applied)).
 
 ### What gets applied, and how
@@ -645,7 +660,7 @@ documented in the OpenAPI spec. Values:
 |---|---|
 | `queued` | An update was enqueued and will be applied. |
 | `blocked_by_policy` | The effective update policy disallows it (e.g. `none`, or `image-only` for a non-image change). |
-| `blocked_preexisting_drift` | The drift pre-dates the job's opt-in; set `--apply-existing-drift` to apply. |
+| `blocked_preexisting_drift` | The drift pre-dates the scope change that brought it in — the job's opt-in, or a policy widening (e.g. `image-only` → `full`); set `--apply-existing-drift` to apply. |
 | `blocked_creation_disabled` | First-time registration needs `--enable-job-creation`. |
 | `skipped_meta_only` | The change is confined to `gitops_*` meta keys (only shown when `--count-meta-only-changes` is on). |
 | `observation_only` | `missing_from_hcl`: running but absent from the repo, left untouched (deregistration disabled, or the job is not deregister-eligible). |
@@ -897,7 +912,7 @@ These counters and timestamps describe the diff check loop itself — how often 
 | `nomad_botherer_meta_key_issues_total` | Counter | `job`, `issue` | Job meta keys under the managed prefix that nomad-botherer cannot act on: `unknown_key` (e.g. a typo like `gitops_managd` or `gitops.managed`) or `invalid_value` (a recognised key with an unusable value, e.g. `gitops_managed = "True"`). Counted every cycle the issue persists; logged once per unique issue (WARN for unknown keys, ERROR for bad values). |
 | `nomad_botherer_meta_key_changes_total` | Counter | `job`, `source` | Managed-prefix meta keys added, removed, or changed between check cycles, on the HCL side (a commit changed them) or the live side (someone re-registered the job manually). Each transition is also logged at INFO with the behavioural consequence. |
 | `nomad_botherer_meta_only_diffs_total` | Counter | `job` | Diffs confined to nomad-botherer's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (`--count-meta-only-changes`, `--apply-meta-only-changes`); they converge on the next real update. A non-zero rate is normal after opting a running job in via a commit. |
-| `nomad_botherer_updates_blocked_preexisting_total` | Counter | `job` | Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable applying it with `--apply-existing-drift`. |
+| `nomad_botherer_updates_blocked_preexisting_total` | Counter | `job` | Updates not enqueued because the drift pre-dated a scope change that brought it in — the job's opt-in (managed tag added) or a policy widening (e.g. `image-only` → `full`). Enable applying it with `--apply-existing-drift`. |
 | `nomad_botherer_jobs_left_management_total` | Counter | `job`, `reason` | Managed jobs that left GitOps management, by reason: `tag_removed` (the managed tag was dropped from HCL) or `removed_from_repo` (HCL file deleted or job renamed). Counted once per transition. |
 | `nomad_botherer_job_updates_total` (operation=`DEREGISTER`) | Counter | `operation`, `status` | Deregistrations reaching a terminal state. See [Deregistration](#deregistration-jobs-removed-from-the-repo). |
 | `nomad_botherer_updates_blocked_known_failed_total` | Counter | `job` | Registrations withheld by the flap-loop guard because the spec matches a recent failed deployment. A persistent non-zero value means a job is stuck on a known-bad commit awaiting a fix in Git. See [Rollback](#rollback-recovering-from-a-bad-change). |

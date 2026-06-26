@@ -632,20 +632,21 @@ func TestApply_ExistingDrift_TagAddedAtHead_AppliedWithFlag(t *testing.T) {
 }
 
 // TestApply_ExistingDrift_TagPresentAtParent_Applied is the established /
-// reconcile-on-start case: the tag was already present before HEAD, so the job
-// is not freshly opted in and its drift reconciles normally.
+// reconcile-on-start case: the tag and the same effective policy were already
+// present before HEAD, so the job is not freshly opted in, its scope did not
+// widen, and its drift reconciles normally.
 func TestApply_ExistingDrift_TagPresentAtParent_Applied(t *testing.T) {
 	var calls []registerCall
 	d := nomad.NewWithClient(metaSelectCfg(false), optInMock(&calls))
 	d.SetHistorySource(fakeHistory{parent: map[string]string{
-		testJobFile: `job "test-job" { meta { gitops_managed = "true" } }`,
+		testJobFile: `job "test-job" { meta { gitops_managed = "true" gitops_update_policy = "full" } }`,
 	}})
 
 	runCheck(t, d, "aaaa111fffff")
 	nomad.DrainUpdates(d)
 
 	if len(calls) != 1 {
-		t.Errorf("an established job (tag present before HEAD) should reconcile, got %d calls", len(calls))
+		t.Errorf("an established job (tag and policy present before HEAD) should reconcile, got %d calls", len(calls))
 	}
 }
 
@@ -694,5 +695,120 @@ func TestApply_ExistingDrift_FileNewAtHead_Applied(t *testing.T) {
 
 	if len(calls) != 1 {
 		t.Errorf("a file created with the tag at HEAD should apply (tag present when spec introduced), got %d calls", len(calls))
+	}
+}
+
+// promotionMock builds a mock for a job managed at HEAD with the given policy,
+// drifting against the live job per planDiff.
+func promotionMock(policy string, planDiff *nomadapi.JobDiff, calls *[]registerCall) *mockJobsClient {
+	return applyMock(map[string]string{
+		"gitops_managed": "true", "gitops_update_policy": policy,
+	}, planDiff, 42, calls)
+}
+
+// parentWithPolicy is a history source whose parent version of the job file is
+// managed with the given policy.
+func parentWithPolicy(policy string) fakeHistory {
+	return fakeHistory{parent: map[string]string{
+		testJobFile: fmt.Sprintf(`job "test-job" { meta { gitops_managed = "true" gitops_update_policy = %q } }`, policy),
+	}}
+}
+
+// Issue #69: a policy change that widens what is applied (e.g. image-only → full)
+// must treat drift that accumulated under the stricter policy the same way an
+// opt-in treats pre-existing drift — deferred by default, applied with the flag.
+
+func TestApply_PolicyPromotion_ImageOnlyToFull_DefersAccumulatedDrift(t *testing.T) {
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(false), promotionMock("full", editedMixedDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("image-only"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 0 {
+		t.Errorf("non-image drift accumulated under image-only must not apply on promotion to full by default, got %d calls", len(calls))
+	}
+	if got := testutil.ToFloat64(nomad.UpdatesBlockedExistingDrift(d).WithLabelValues("test-job")); got != 1 {
+		t.Errorf("blocked-preexisting metric: want 1, got %v", got)
+	}
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 1 || diffs[0].ApplyAction != nomad.ApplyActionPreExisting {
+		t.Errorf("diff should surface the pre-existing reason, got %+v", diffs)
+	}
+}
+
+func TestApply_PolicyPromotion_ImageOnlyToFull_AppliedWithFlag(t *testing.T) {
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(true), promotionMock("full", editedMixedDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("image-only"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("with --apply-existing-drift the accumulated drift should apply on promotion, got %d calls", len(calls))
+	}
+}
+
+func TestApply_PolicyPromotion_NoneToFull_DefersAccumulatedDrift(t *testing.T) {
+	// none → full: all drift was out of scope under none, so it is pre-existing.
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(false), promotionMock("full", editedMixedDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("none"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 0 {
+		t.Errorf("drift accumulated under none must not apply on promotion to full by default, got %d calls", len(calls))
+	}
+}
+
+func TestApply_PolicyPromotion_ImageDriftRemainsInScope_Applies(t *testing.T) {
+	// image-only → full where the pending drift is image-class: it was already in
+	// scope under image-only, so promotion does not defer it.
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(false), promotionMock("full", editedImageDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("image-only"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("image drift already in scope under image-only should apply on promotion to full, got %d calls", len(calls))
+	}
+}
+
+func TestApply_PolicyStable_NoWidening_Applies(t *testing.T) {
+	// Same policy (full) at parent and HEAD: no widening, so drift reconciles
+	// normally even though it pre-dates the commit being evaluated.
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(false), promotionMock("full", editedMixedDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("full"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if len(calls) != 1 {
+		t.Errorf("a stable full policy should reconcile drift normally, got %d calls", len(calls))
+	}
+}
+
+func TestApply_PolicyPromotion_MetaOnlyChange_NotPreExisting(t *testing.T) {
+	// A commit that only changes gitops_* meta (no other drift) is governed by
+	// the meta-only gate, not the pre-existing gate.
+	var calls []registerCall
+	d := nomad.NewWithClient(metaSelectCfg(false), promotionMock("full", metaOnlyManagedDiff(), &calls))
+	d.SetHistorySource(parentWithPolicy("image-only"))
+
+	runCheck(t, d, "aaaa111fffff")
+	nomad.DrainUpdates(d)
+
+	if got := testutil.ToFloat64(nomad.UpdatesBlockedExistingDrift(d).WithLabelValues("test-job")); got != 0 {
+		t.Errorf("a meta-only change must not be flagged pre-existing, got %v", got)
+	}
+	if len(calls) != 0 {
+		t.Errorf("a meta-only change should not register by default, got %d calls", len(calls))
 	}
 }

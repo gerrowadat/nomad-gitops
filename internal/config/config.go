@@ -58,9 +58,11 @@ type Config struct {
 	CountMetaOnlyChanges bool
 
 	// ApplyExistingDrift controls whether drift that already existed when a
-	// job entered management scope (gained the meta tag while the process was
-	// running) is applied. Off by default: opting a job in does not retroactively
-	// mutate it; only changes committed after opt-in apply.
+	// change widened a job's scope is applied. Scope widens two ways, treated
+	// the same: a job gains the managed meta tag (enablement), or its update
+	// policy is widened to cover drift it was deferring (e.g. image-only → full).
+	// Off by default: a scope change does not retroactively mutate the job; only
+	// changes committed after it apply.
 	ApplyExistingDrift bool
 
 	// Deregistration of jobs removed from the repo (file deleted or job
@@ -141,7 +143,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.DurationVar(&c.ApplyInterval, "apply-interval", envDurationOrDefault("APPLY_INTERVAL", 10*time.Second), "Fallback cadence of the apply loop; enqueued updates are also applied immediately")
 	fs.BoolVar(&c.ApplyMetaOnlyChanges, "apply-meta-only-changes", envBoolOrDefault("APPLY_META_ONLY_CHANGES", false), "Apply a diff whose only change is to nomad-botherer's own meta keys (e.g. gitops_managed). Off by default: re-registering a running job just to push these keys is disruptive and unnecessary (the HCL is already authoritative), so they ride along the next real update instead.")
 	fs.BoolVar(&c.CountMetaOnlyChanges, "count-meta-only-changes", envBoolOrDefault("COUNT_META_ONLY_CHANGES", false), "Count a managed-meta-only diff as drift (surface it on /diffs, /healthz, and the drift metrics). Off by default so these expected differences do not trigger drift alerts.")
-	fs.BoolVar(&c.ApplyExistingDrift, "apply-existing-drift", envBoolOrDefault("APPLY_EXISTING_DRIFT", false), "When a job enters management scope (gains the managed meta tag while nomad-botherer is running), apply drift that already existed at that moment. Off by default (conservative): opting a job in does not retroactively mutate it; only changes committed after opt-in apply. Jobs already managed when the process starts are unaffected — their drift reconciles normally.")
+	fs.BoolVar(&c.ApplyExistingDrift, "apply-existing-drift", envBoolOrDefault("APPLY_EXISTING_DRIFT", false), "When a change widens a job's scope, apply drift that already existed at that moment. Scope widens two ways, treated the same: a job gains the managed meta tag (enablement), or its update policy is widened to cover drift it was deferring (e.g. image-only → full applying a non-image change committed earlier). Off by default (conservative): a scope change does not retroactively mutate the job; only changes committed after it apply. Drift reconciles normally when scope is unchanged.")
 	fs.BoolVar(&c.EnableDeregister, "enable-deregister", envBoolOrDefault("ENABLE_DEREGISTER", false), "Deregister jobs that were removed from the repo entirely (HCL file deleted or job renamed) while still running in Nomad. Off by default. Only ever acts on a job carrying gitops_managed=true in its live meta whose effective update policy is full, and only after it has been continuously orphaned for --deregister-grace. Removing only the gitops_managed tag (with the job still in the repo) never deregisters — it just stops management.")
 	fs.BoolVar(&c.DeregisterPurge, "deregister-purge", envBoolOrDefault("DEREGISTER_PURGE", false), "When deregistering, purge the job from Nomad's state immediately instead of a graceful stop (which leaves it queryable and garbage-collected later). Off by default.")
 	fs.DurationVar(&c.DeregisterGrace, "deregister-grace", envDurationOrDefault("DEREGISTER_GRACE", 5*time.Minute), "How long a job must be continuously orphaned (running in Nomad, removed from the repo) before it is deregistered. Absorbs transient renames and mid-edit commits.")

@@ -86,7 +86,8 @@ const (
 	ApplyActionQueued ApplyAction = "queued"
 	// ApplyActionPolicyBlocked means the effective update policy disallows it.
 	ApplyActionPolicyBlocked ApplyAction = "blocked_by_policy"
-	// ApplyActionPreExisting means the drift pre-dated the job's opt-in.
+	// ApplyActionPreExisting means the drift pre-dated the scope change that
+	// brought it into scope — the job's opt-in, or a policy widening.
 	ApplyActionPreExisting ApplyAction = "blocked_preexisting_drift"
 	// ApplyActionCreationBlocked means first-time registration is disabled.
 	ApplyActionCreationBlocked ApplyAction = "blocked_creation_disabled"
@@ -118,7 +119,7 @@ func (a ApplyAction) Describe() string {
 	case ApplyActionPolicyBlocked:
 		return "not applied: blocked by update policy"
 	case ApplyActionPreExisting:
-		return "not applied: drift pre-dates opt-in (set --apply-existing-drift)"
+		return "not applied: drift pre-dates the scope change that brought it in — opt-in or policy widening (set --apply-existing-drift)"
 	case ApplyActionCreationBlocked:
 		return "not applied: job creation disabled (set --enable-job-creation)"
 	case ApplyActionMetaOnly:
@@ -237,8 +238,11 @@ type Differ struct {
 	// detect pre-existing drift. nil disables the check.
 	history HistorySource
 	// managedKeyRe matches the opt-in key set to "true" in raw HCL text, for
-	// the cheap parent-content check.
+	// the cheap parent-content check. policyKeyRe captures the value of the
+	// <prefix>_update_policy key in raw HCL text, used to read a job's policy at
+	// the parent commit without re-parsing.
 	managedKeyRe *regexp.Regexp
+	policyKeyRe  *regexp.Regexp
 	// applyInterval is the fallback cadence of the applier loop; enqueues
 	// also wake it immediately via applyCh.
 	applyInterval time.Duration
@@ -316,11 +320,13 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		flapGuard = "history"
 	}
 
-	var managedKeyRe *regexp.Regexp
+	var managedKeyRe, policyKeyRe *regexp.Regexp
 	if cfg.ManagedMetaPrefix != "" {
 		// Matches <prefix>_managed = "true" in raw HCL, in both the block form
 		// (bare key) and the object-expression form (quoted key).
 		managedKeyRe = regexp.MustCompile(`(?m)"?` + regexp.QuoteMeta(cfg.ManagedMetaPrefix) + `_managed"?\s*=\s*"true"`)
+		// Captures the value of <prefix>_update_policy in either HCL form.
+		policyKeyRe = regexp.MustCompile(`(?m)"?` + regexp.QuoteMeta(cfg.ManagedMetaPrefix) + `_update_policy"?\s*=\s*"([^"]*)"`)
 	}
 
 	f := promauto.With(reg)
@@ -340,6 +346,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		deregisterPurge:      cfg.DeregisterPurge,
 		deregisterGrace:      cfg.DeregisterGrace,
 		managedKeyRe:         managedKeyRe,
+		policyKeyRe:          policyKeyRe,
 		flapGuard:            flapGuard,
 		allowRollback:        cfg.AllowRollback,
 		applyInterval:        applyInterval,
@@ -424,7 +431,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		}, []string{"job"}),
 		updatesBlockedExistingDrift: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_updates_blocked_preexisting_total",
-			Help: "Updates not enqueued because the drift pre-existed the job entering scope (opt-in via meta tag while running). Enable with --apply-existing-drift.",
+			Help: "Updates not enqueued because the drift pre-dated a scope change that brought it in: the job's opt-in (managed tag added) or a policy widening (e.g. image-only to full). Enable with --apply-existing-drift.",
 		}, []string{"job"}),
 		jobsLeftManagement: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_jobs_left_management_total",
@@ -1052,18 +1059,29 @@ func (d *Differ) SetHistorySource(h HistorySource) {
 	d.history = h
 }
 
-// isPreExistingDrift reports whether a candidate's drift pre-dates the job
-// entering management scope — i.e. the managed opt-in tag was added in the
-// commit being evaluated (absent in that commit's parent version of the job's
-// HCL file). This is derived from git history, so it holds identically whether
-// the tag was added while the process was running or before it started: a job
-// already managed in an earlier commit is established and reconciles normally;
-// one opted in at this commit is frozen until a later commit arrives.
+// isPreExistingDrift reports whether a candidate's drift pre-dates the change,
+// at the commit being evaluated, that brought it into scope to apply. Two such
+// scope-widening changes are treated the same way (issue #69):
 //
-// Glob-selected jobs are always in scope and have no opt-in moment, so they
-// are never pre-existing. Creations have no live job to pre-date. When history
-// is unavailable the check is skipped (not pre-existing) so reconciliation is
-// not broken.
+//   - Enablement: the managed opt-in tag (<prefix>_managed) was added at this
+//     commit (absent in the parent version of the file). The whole job entered
+//     management; its existing drift pre-dates the opt-in.
+//   - Policy promotion: the job was managed at the parent, but its effective
+//     update policy there would not have applied this diff's class, while the
+//     policy at this commit does (e.g. image-only → full applying a memory
+//     change that image-only had been deferring). The drift was live the whole
+//     time, merely held back by the stricter policy.
+//
+// In both cases the conservative default is not to retroactively apply the
+// accumulated drift: changing scope expresses intent about future
+// reconciliation, not "deploy the backlog now". --apply-existing-drift opts in
+// to applying it.
+//
+// Derived from git history, so it holds identically whether the change landed
+// while the process was running or before it started. Glob-selected jobs are
+// always in scope and have no opt-in moment, so they are never pre-existing.
+// Creations have no live job to pre-date. When history is unavailable the check
+// is skipped (not pre-existing) so reconciliation is not broken.
 func (d *Differ) isPreExistingDrift(c *updateCandidate, commit string) bool {
 	if c.isCreation || c.globSel || d.history == nil || d.managedKeyRe == nil || c.hclFile == "" {
 		return false
@@ -1071,15 +1089,55 @@ func (d *Differ) isPreExistingDrift(c *updateCandidate, commit string) bool {
 	parent, ok := d.history.FileAtParentOf(commit, c.hclFile)
 	if !ok {
 		// No parent version: the file was created at this commit (or it is the
-		// root commit). The tag and the spec were introduced together, so the
-		// tag was present when the diff was introduced — not a retroactive
-		// opt-in.
+		// root commit). The tag, policy, and spec were introduced together, so
+		// nothing was deferred under an earlier scope — not retroactive.
 		return false
 	}
-	// Tag present at the parent → the job was already managed before this
-	// commit → established. Absent → the tag was added to a pre-existing file
-	// at this commit → retroactive opt-in, so the drift pre-dates it.
-	return !d.managedKeyRe.MatchString(parent)
+	if !d.managedKeyRe.MatchString(parent) {
+		// The opt-in tag was added at this commit: the job entered management
+		// here, so its drift pre-dates the opt-in.
+		return true
+	}
+	// Managed at the parent too. A managed-meta-only diff is governed by the
+	// meta-only gate, not this one.
+	if c.class == DiffClassManagedMetaOnly {
+		return false
+	}
+	// Pre-existing iff the parent's effective policy would not have applied this
+	// diff's class but the current one does — a scope-widening policy change at
+	// this commit.
+	return !policyPermits(d.effectivePolicyFromText(parent), c.class) &&
+		policyPermits(d.effectivePolicy(c.job.Meta), c.class)
+}
+
+// policyPermits reports whether an update policy would apply a diff of the given
+// class. Mirrors the policy gate in decideApplyAction (creation, which is
+// full-only, is handled separately and never reaches the pre-existing check).
+func policyPermits(policy UpdatePolicy, class DiffClass) bool {
+	switch policy {
+	case UpdatePolicyFull:
+		return true
+	case UpdatePolicyImageOnly:
+		return class == DiffClassImageOnly
+	default: // none, or an unrecognised value treated as none
+		return false
+	}
+}
+
+// effectivePolicyFromText resolves a job's update policy from a raw HCL snapshot
+// (e.g. a parent commit's version of the file), without re-parsing: the
+// <prefix>_update_policy value wins, an unrecognised value is treated as none
+// (matching effectivePolicy), and an absent key falls back to the default.
+func (d *Differ) effectivePolicyFromText(hclText string) UpdatePolicy {
+	if d.policyKeyRe != nil {
+		if m := d.policyKeyRe.FindStringSubmatch(hclText); m != nil {
+			if ValidUpdatePolicy(m[1]) {
+				return UpdatePolicy(m[1])
+			}
+			return UpdatePolicyNone
+		}
+	}
+	return d.defaultPolicy
 }
 
 // logScopeExits logs, once per transition, when a job leaves active GitOps
@@ -1164,11 +1222,12 @@ func (d *Differ) decideApplyAction(c *updateCandidate, commit string, q *nomadap
 	}
 
 	if !c.isCreation && d.isPreExistingDrift(c, commit) && !d.applyExistingDrift {
-		// The drift was already there when the job entered scope (the managed
-		// tag was added in the HEAD commit). Conservative default: opting a job
-		// in does not retroactively mutate it; only changes committed after
-		// opt-in apply. Enable with --apply-existing-drift.
-		slog.Info("Pre-existing drift not applied on opt-in; set --apply-existing-drift to apply", "job", c.jobID)
+		// The drift was already there when the change that brought it into scope
+		// landed at the HEAD commit — the job's opt-in tag was added, or its
+		// policy was widened to cover this diff. Conservative default: a scope
+		// change does not retroactively mutate the job; only changes committed
+		// after it apply. Enable with --apply-existing-drift.
+		slog.Info("Pre-existing drift not applied on scope change (opt-in or policy widening); set --apply-existing-drift to apply", "job", c.jobID)
 		d.updatesBlockedExistingDrift.WithLabelValues(c.jobID).Inc()
 		return ApplyActionPreExisting
 	}

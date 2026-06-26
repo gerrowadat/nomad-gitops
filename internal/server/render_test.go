@@ -304,7 +304,7 @@ func TestDiffs_ShowsApplyActionReason(t *testing.T) {
 		},
 	}
 	body := diffsResponse(t, diffs, time.Now())
-	if !strings.Contains(body, "drift pre-dates opt-in") {
+	if !strings.Contains(body, "drift pre-dates the scope change") {
 		t.Errorf("/diffs should explain why the diff is not applied, got:\n%s", body)
 	}
 }
