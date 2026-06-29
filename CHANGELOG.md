@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-06-29
+
+Verified against Nomad 1.9.6, 1.10.5, 1.11.3, and 2.0.2 (full regression
+suite). See [docs/nomad-versions.md](docs/nomad-versions.md).
 
 ### New features
 
@@ -15,9 +18,9 @@
   `NOMAD_TOKEN_FILE` and `--nomad-token-poll-interval` /
   `NOMAD_TOKEN_POLL_INTERVAL`. A token file takes precedence over a static
   `--nomad-token`, which is retained for manual running and testing. New counter
-  `nomad_botherer_nomad_token_refreshes_total{result}`. See the README
-  "Authenticating to Nomad" section and `docs/design/nomad-auth.md`; the example
-  job in `examples/nomad-botherer.hcl` now uses workload identity. Covered by a
+  `nomad_botherer_nomad_token_refreshes_total{result}`. See
+  `docs/setup/nomad-access.md` and `docs/design/nomad-auth.md`; the example job
+  in `examples/nomad-botherer.hcl` now uses workload identity. Covered by a
   regression test (`tests/regression/auth_test.go`) that runs against a real
   ACL-enabled Nomad: static token vs anonymous denial, token-file and
   auto-detected workload-identity auth, and live token rotation.
@@ -37,8 +40,21 @@
   behaviour. Drift on a job whose scope did not change reconciles normally. The
   decision is git-history-derived (no new state); surfaced as before by
   `apply_action=blocked_preexisting_drift` and
-  `nomad_botherer_updates_blocked_preexisting_total`. See the README
-  "Drift that pre-dates a scope change" section and `docs/design/update-policies.md`.
+  `nomad_botherer_updates_blocked_preexisting_total`. See
+  `docs/applying-changes.md` ("Drift that pre-dates a scope change") and
+  `docs/design/update-policies.md`.
+
+### Docs
+
+- **The documentation is now a guide set under `docs/`** instead of one giant
+  README. The README is a lean landing page; setup, configuration, applying
+  changes, rollback, monitoring, and the API each have their own doc, plus new
+  pages for common use cases, an FAQ / gotchas list, and the design philosophy.
+  Indexed by `docs/README.md`.
+- **Added a canonical [meta-key reference](docs/meta-keys.md)** listing every
+  `gitops_*` job meta key and its valid values.
+- **Added an Apache 2.0 `LICENSE`** and references to it (README, docs, and the
+  Docker image's `org.opencontainers.image.licenses` label).
 
 ## v0.8.0 — 2026-06-20
 
