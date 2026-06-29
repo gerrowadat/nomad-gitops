@@ -4,7 +4,13 @@
 
 **Always update tests.** Every code change must have corresponding test coverage. No exceptions.
 
-**Always update docs.** Config flag added or changed? Update the README table. Behaviour changed? Update the relevant section. Keep docs current.
+**Always update docs.** The docs are a set under `docs/` (indexed by `docs/README.md`), not one giant README; the top-level `README.md` is a lean landing page (overview, quick start, "how it works", a documentation map). Put new content in the right doc and keep it lean:
+- Config flag added or changed? Update the table in `docs/configuration.md` (flags *and* their env vars).
+- Job meta key (`gitops_*`) added or its valid values changed? Update `docs/meta-keys.md` — it is the canonical reference, and `internal/nomad/metacheck.go` is its source of truth.
+- Behaviour changed? Update the relevant guide (`docs/applying-changes.md`, `docs/rollback.md`, `docs/job-selection.md`, etc.).
+- New non-obvious behaviour? Add a `docs/faq.md` entry, and a `docs/use-cases.md` recipe if it's a common goal.
+- A design rationale worth recording goes in `docs/design/`; the cross-cutting "why" lives in `docs/philosophy.md`.
+Keep cross-links working and the `docs/README.md` index current.
 
 **Proposals graduate to design docs when implemented.** `docs/proposals/` is for not-yet-built ideas; `docs/design/` is the retrospective record of *why* a shipped feature is the way it is. When a feature in a proposal lands, `git mv` the doc to `docs/design/`, retitle it `# Design: …`, update its status (what shipped, in which release, and where it diverged from the proposal), fix cross-links, and leave any still-unimplemented parts behind in `docs/proposals/`. Do this as part of the feature's own PR going forward, so the split never drifts.
 
@@ -30,7 +36,7 @@ internal/server/        HTTP: /, /healthz, /diffs, /metrics, /webhook
 
 ## Key conventions
 
-- All config flags have env var counterparts; document both in README
+- All config flags have env var counterparts; document both in `docs/configuration.md`
 - Tests use injected interfaces (`NomadJobsClient`, `DiffSource`, etc.) — keep production code testable without a live Nomad cluster
 - Per-test Prometheus registries (`prometheus.NewRegistry()`) to avoid duplicate-registration panics
 - `/{$}` for exact root match (Go 1.22+ ServeMux)
@@ -158,7 +164,7 @@ should not be repeated:
   every cycle. If a scaling policy is present, treat changes to `Count` as owned
   by the autoscaler, not by Git.
 - **Do not hardcode intervals.** Every timing parameter should be a config flag
-  with a corresponding env var. Document both in the README table.
+  with a corresponding env var. Document both in the `docs/configuration.md` table.
 
 ### Vocabulary used in proposals
 

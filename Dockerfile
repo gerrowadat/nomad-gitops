@@ -24,6 +24,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # ── runtime image ──────────────────────────────────────────────────────────────
 FROM alpine:3.21
 
+LABEL org.opencontainers.image.title="nomad-botherer" \
+      org.opencontainers.image.source="https://github.com/gerrowadat/nomad-botherer" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S nomad-botherer && \
     adduser -S -G nomad-botherer nomad-botherer
