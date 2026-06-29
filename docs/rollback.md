@@ -61,7 +61,7 @@ non-stable version.
 | `off` | The guard is disabled. | A known-bad spec can loop. Only sensible per-job, via the meta key, for a job where you accept the risk. |
 
 Per job, override with the `<prefix>_flap_guard` meta key (`history`, `tag`, or
-`off`).
+`off`) — see the [Meta-key reference](meta-keys.md).
 
 Spec comparison is best-effort: server-side defaulting can make a genuinely
 identical spec fingerprint differently, in which case the guard *misses* and the

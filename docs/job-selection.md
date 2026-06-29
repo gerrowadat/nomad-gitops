@@ -15,7 +15,8 @@ registered Nomad meta are watched.
 
 The prefix is a namespace for all meta keys nomad-botherer reads or writes.
 Using `gitops` means the opt-in key is `gitops_managed`, and other attributes
-follow the same `gitops_<attribute>` pattern.
+follow the same `gitops_<attribute>` pattern. The full set is catalogued in the
+[Meta-key reference](meta-keys.md).
 
 If you need to change the prefix — for example because another team already owns
 `gitops_*` on the cluster — keep `gitops` as a root and append your qualifier:

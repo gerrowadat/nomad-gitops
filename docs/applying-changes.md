@@ -32,7 +32,8 @@ job "api-server" {
 
 An unrecognised policy value in job meta is treated as `none` and logged. The
 meta key name follows `--managed-meta-prefix`: with the default prefix the key
-is `gitops_update_policy`.
+is `gitops_update_policy`. Every job meta key and its valid values are
+catalogued in the [Meta-key reference](meta-keys.md).
 
 More generally, any meta key under the managed prefix that nomad-botherer cannot
 act on is flagged, because such keys silently change behaviour: an unknown key (a

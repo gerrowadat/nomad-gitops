@@ -86,7 +86,8 @@ The full docs live in [`docs/`](docs/README.md):
   [Nomad access](docs/setup/nomad-access.md) (workload identity / token),
   [webhooks](docs/setup/webhooks.md).
 - **Using it** — [common use cases](docs/use-cases.md),
-  [configuration](docs/configuration.md), [job selection](docs/job-selection.md),
+  [configuration](docs/configuration.md),
+  [meta-key reference](docs/meta-keys.md), [job selection](docs/job-selection.md),
   [applying changes](docs/applying-changes.md), [rollback](docs/rollback.md),
   [monitoring](docs/monitoring.md), [JSON API](docs/json-api.md).
 - **Understanding it** — [FAQ & gotchas](docs/faq.md),

@@ -19,8 +19,9 @@ your deployment.
 ## Using it
 
 - [Common use cases](use-cases.md) — copy-paste recipes for the usual goals.
-- [Configuration](configuration.md) — the full flag / env-var / meta-key
-  reference.
+- [Configuration](configuration.md) — the full flag / env-var reference.
+- [Meta-key reference](meta-keys.md) — the canonical list of every job meta key
+  and its valid values.
 - [Job selection](job-selection.md) — choosing which jobs are watched, and why
   Git is the source of truth.
 - [Applying changes (GitOps mode)](applying-changes.md) — update policies,

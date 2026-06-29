@@ -46,16 +46,7 @@ Logs are written to stderr as JSON (structured via `log/slog`).
 
 ## Per-job meta keys
 
-Some behaviour is set per job in its HCL `meta {}` block rather than by a flag.
-All use the `--managed-meta-prefix` (default `gitops`):
-
-| Key | Values | Meaning |
-|---|---|---|
-| `gitops_managed` | `true` / `false` | Opt the job in to (or explicitly out of) management. See [Job selection](job-selection.md). |
-| `gitops_update_policy` | `none` / `image-only` / `full` | How much drift to apply; overrides `--default-update-policy`. See [Applying changes](applying-changes.md#update-policies). |
-| `gitops_flap_guard` | `history` / `tag` / `off` | Per-job flap-loop-guard mode; overrides `--flap-guard`. See [Rollback](rollback.md). |
-| `gitops_rollback` | `true` / `false` | Per-job active-rollback toggle; overrides `--allow-rollback`. See [Rollback](rollback.md). |
-
-An unrecognised key under the prefix, or a recognised key with an unusable
-value, is logged and counted — see
-[Managed-meta-key validation](applying-changes.md#update-policies).
+Some behaviour is set per job in its HCL `meta {}` block rather than by a flag —
+`gitops_managed`, `gitops_update_policy`, `gitops_flap_guard`, and
+`gitops_rollback`. The **[Meta-key reference](meta-keys.md)** is the canonical
+list of every key, its valid values, and what it overrides.

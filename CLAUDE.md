@@ -6,6 +6,7 @@
 
 **Always update docs.** The docs are a set under `docs/` (indexed by `docs/README.md`), not one giant README; the top-level `README.md` is a lean landing page (overview, quick start, "how it works", a documentation map). Put new content in the right doc and keep it lean:
 - Config flag added or changed? Update the table in `docs/configuration.md` (flags *and* their env vars).
+- Job meta key (`gitops_*`) added or its valid values changed? Update `docs/meta-keys.md` — it is the canonical reference, and `internal/nomad/metacheck.go` is its source of truth.
 - Behaviour changed? Update the relevant guide (`docs/applying-changes.md`, `docs/rollback.md`, `docs/job-selection.md`, etc.).
 - New non-obvious behaviour? Add a `docs/faq.md` entry, and a `docs/use-cases.md` recipe if it's a common goal.
 - A design rationale worth recording goes in `docs/design/`; the cross-cutting "why" lives in `docs/philosophy.md`.
