@@ -32,7 +32,7 @@ groups:
 
       # 5-minute rate of Nomad API errors, labelled by operation.
       - record: nomad_gitops:nomad_api_error_rate5m
-        expr: rate(nomad_gitops_nomad_api_errors_total[5m])
+        expr: rate(nomad_gitops_api_errors_total[5m])
 
       # Seconds since the last successful diff check.
       - record: nomad_gitops:seconds_since_last_check

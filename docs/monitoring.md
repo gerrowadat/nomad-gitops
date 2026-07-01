@@ -72,7 +72,7 @@ runs and whether it is working correctly.
 | `nomad_gitops_diff_checks_total` | Counter | — | Total diff checks run since startup. Use `rate()` to confirm the loop is running at the expected frequency. |
 | `nomad_gitops_diff_checks_skipped_total` | Counter | — | Checks skipped because neither the Nomad Raft index nor the git commit changed since the last run. A high skip rate is normal and indicates the optimisation is working. |
 | `nomad_gitops_last_check_timestamp_seconds` | Gauge | — | Unix timestamp of the most recent completed diff check. Alert when `time() - metric` exceeds 2× `--diff-interval` to catch a stuck check loop. |
-| `nomad_gitops_nomad_api_errors_total` | Counter | `op` (`info`, `plan`, `list`, `register`, `deregister`, `versions`, `deployments`, `deployment`, `revert`, `tag`) | Nomad API call failures by operation. `info` = job lookup, `plan` = drift plan, `list` = listing all jobs, `register`/`deregister`/`revert` = apply-side writes, `versions`/`deployments`/`deployment` = rollback and flap-guard reads, `tag` = flap-guard version tagging. A rising count means results may be incomplete for that operation. |
+| `nomad_gitops_api_errors_total` | Counter | `op` (`info`, `plan`, `list`, `register`, `deregister`, `versions`, `deployments`, `deployment`, `revert`, `tag`) | Nomad API call failures by operation. `info` = job lookup, `plan` = drift plan, `list` = listing all jobs, `register`/`deregister`/`revert` = apply-side writes, `versions`/`deployments`/`deployment` = rollback and flap-guard reads, `tag` = flap-guard version tagging. A rising count means results may be incomplete for that operation. |
 | `nomad_gitops_hcl_parse_errors_total` | Counter | — | HCL files that failed to parse via the Nomad API. These files are skipped; the rest of the check continues. |
 | `nomad_gitops_hcl_non_job_files_skipped_total` | Counter | — | HCL files that were skipped because they contain no `job` stanza (e.g. ACL policies, volumes). Expected and normal; a rising rate may indicate `--hcl-dir` is set too broadly. |
 | `nomad_gitops_jobs_skipped_by_selector_total` | Counter | `source` (`hcl`, `nomad`) | Jobs skipped because they did not match the selection criteria (glob or managed meta key), by where they were seen. Expected on a shared cluster with unmanaged jobs. |
@@ -89,8 +89,8 @@ runs and whether it is working correctly.
 | `nomad_gitops_updates_blocked_known_failed_total` | Counter | `job` | Registrations withheld by the flap-loop guard because the spec matches a recent failed deployment. A persistent non-zero value means a job is stuck on a known-bad commit awaiting a fix in Git. See [Rollback](rollback.md). |
 | `nomad_gitops_rollbacks_total` | Counter | `job`, `result` | Active-rollback outcomes: `queued` (a revert was enqueued), `deferred_auto_revert` (stood down because the job sets `auto_revert`), `no_stable_version` (no earlier stable version to revert to). See [Rollback](rollback.md). |
 | `nomad_gitops_failed_versions_tagged_total` | Counter | `job` | Failed versions tagged by `--flap-guard=tag` so the block survives Nomad's version GC. |
-| `nomad_gitops_nomad_token_refreshes_total` | Counter | `result` | Re-reads of the `--nomad-token-file`: `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). See [Nomad access](setup/nomad-access.md). |
-| `nomad_gitops_nomad_logins_total` | Counter | `result` | Workload-identity token exchanges via `/v1/acl/login` (`--nomad-login-auth-method`): `success` (a fresh ACL token was obtained and applied) or `error` (the exchange failed; previous token kept). A rising `error` count means the JWT/auth-method/binding-rule setup is wrong — check the startup log. See [Nomad access](setup/nomad-access.md#workload-identity-recommended-under-nomad). |
+| `nomad_gitops_token_refreshes_total` | Counter | `result` | Re-reads of the `--nomad-token-file`: `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). See [Nomad access](setup/nomad-access.md). |
+| `nomad_gitops_logins_total` | Counter | `result` | Workload-identity token exchanges via `/v1/acl/login` (`--nomad-login-auth-method`): `success` (a fresh ACL token was obtained and applied) or `error` (the exchange failed; previous token kept). A rising `error` count means the JWT/auth-method/binding-rule setup is wrong — check the startup log. See [Nomad access](setup/nomad-access.md#workload-identity-recommended-under-nomad). |
 
 ### Git tracking
 
@@ -120,7 +120,7 @@ These counters are only non-zero when `--max-git-staleness` or
 | Metric | Type | Labels | What it tells you |
 |--------|------|--------|-------------------|
 | `nomad_gitops_git_staleness_refreshes_total` | Counter | — | Git fetches triggered because `time() - nomad_gitops_git_last_update_timestamp_seconds` exceeded `--max-git-staleness`. A rising count means the normal polling or webhook path is not keeping the repo current. |
-| `nomad_gitops_nomad_staleness_checks_total` | Counter | — | Nomad diff checks triggered because `time() - nomad_gitops_last_check_timestamp_seconds` exceeded `--max-nomad-staleness`. A rising count means the normal diff loop is falling behind. |
+| `nomad_gitops_staleness_checks_total` | Counter | — | Nomad diff checks triggered because `time() - nomad_gitops_last_check_timestamp_seconds` exceeded `--max-nomad-staleness`. A rising count means the normal diff loop is falling behind. |
 
 ### Service info
 

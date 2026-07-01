@@ -328,7 +328,7 @@ func TestDrift_ForceCheck(t *testing.T) {
 	}
 
 	// The staleness counter must always be incremented by ForceCheck.
-	stale := gatherCounter(t, reg, "nomad_gitops_nomad_staleness_checks_total")
+	stale := gatherCounter(t, reg, "nomad_gitops_staleness_checks_total")
 	if stale < 1 {
 		t.Errorf("want ≥1 staleness check counted, got %v", stale)
 	}

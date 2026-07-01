@@ -228,7 +228,7 @@ func TestAuth_WithACLs(t *testing.T) {
 		if differSeesJob(t, d, jobID, "manual-anon") {
 			t.Error("anonymous access must not see jobs on an ACL-enabled cluster")
 		}
-		if got := gatherCounter(t, reg, "nomad_gitops_nomad_api_errors_total"); got == 0 {
+		if got := gatherCounter(t, reg, "nomad_gitops_api_errors_total"); got == 0 {
 			t.Error("anonymous List should be rejected by ACLs and counted in nomad_api_errors_total")
 		}
 	})
@@ -335,7 +335,7 @@ func TestAuth_WithACLs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewDifferWithRegistry: %v", err)
 		}
-		if got := gatherCounter(t, reg, "nomad_gitops_nomad_logins_total"); got == 0 {
+		if got := gatherCounter(t, reg, "nomad_gitops_logins_total"); got == 0 {
 			t.Fatal("expected a successful /v1/acl/login exchange at startup")
 		}
 		// Exercise Job.Plan specifically — the RPC that rejected raw WI JWTs and
@@ -382,7 +382,7 @@ func TestAuth_WithACLs(t *testing.T) {
 
 		// Wait until the refresher has applied a rotated token.
 		deadline := time.Now().Add(5 * time.Second)
-		for gatherCounter(t, reg, "nomad_gitops_nomad_token_refreshes_total") == 0 {
+		for gatherCounter(t, reg, "nomad_gitops_token_refreshes_total") == 0 {
 			if time.Now().After(deadline) {
 				t.Fatal("token refresher did not apply the rotated token within 5s")
 			}

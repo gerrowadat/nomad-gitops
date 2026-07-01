@@ -92,7 +92,7 @@ volume and no secret store.
 
 ## Observability
 
-`nomad_gitops_nomad_token_refreshes_total{result}` — `rotated` when a changed
+`nomad_gitops_token_refreshes_total{result}` — `rotated` when a changed
 token is applied, `error` when the file can't be read (the previous token is
 kept). The active source (file / static / none) is logged once at startup.
 

@@ -33,14 +33,14 @@ func TestMetrics_AllExpectedMetricsPresent(t *testing.T) {
 		"nomad_gitops_diff_checks_skipped_total",
 		"nomad_gitops_hcl_parse_errors_total",
 		"nomad_gitops_hcl_non_job_files_skipped_total",
-		"nomad_gitops_nomad_api_errors_total",
+		"nomad_gitops_api_errors_total",
 		"nomad_gitops_last_check_timestamp_seconds",
 		// nomad_gitops_job_diffs and nomad_gitops_job_drift_first_seen_timestamp_seconds
 		// have a dynamic "job" label and only appear after a Check call produces drift.
 		// They are exercised by TestMetrics_DiffCountersReflectState and
 		// TestMetrics_FirstSeenTimestamps.
 		"nomad_gitops_drifted_jobs",
-		"nomad_gitops_nomad_staleness_checks_total",
+		"nomad_gitops_staleness_checks_total",
 		"nomad_gitops_jobs_skipped_by_selector_total",
 	}
 	for _, name := range required {

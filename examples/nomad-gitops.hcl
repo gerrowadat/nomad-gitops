@@ -45,7 +45,7 @@ job "nomad-gitops" {
     gitops_managed = "true"
   }
 
-  group "gitops" {
+  group "main" {
     # nomad-gitops stores all git state in memory and writes nothing to
     # disk. A single allocation is correct; running more than one produces
     # duplicate drift reports.

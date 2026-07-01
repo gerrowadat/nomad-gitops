@@ -29,6 +29,13 @@ suite). See [docs/nomad-versions.md](docs/nomad-versions.md).
   the recording-rule series `nomad_botherer:*` → `nomad_gitops:*`. **Update your
   dashboards, alerts, and recording rules.** The shipped `monitoring/*.yml` are
   updated, and the bundled alert names changed `NomadBotherer*` → `NomadGitops*`.
+  Four metrics additionally dropped a redundant `nomad_` segment, so a naive
+  `nomad_botherer_` → `nomad_gitops_` substitution is **not** correct for these —
+  map them explicitly:
+  - `nomad_botherer_nomad_api_errors_total` → `nomad_gitops_api_errors_total`
+  - `nomad_botherer_nomad_logins_total` → `nomad_gitops_logins_total`
+  - `nomad_botherer_nomad_staleness_checks_total` → `nomad_gitops_staleness_checks_total`
+  - `nomad_botherer_nomad_token_refreshes_total` → `nomad_gitops_token_refreshes_total`
 - **GitHub repository** renamed to `nomad-gitops` (old URLs redirect).
 
 ### Not changed

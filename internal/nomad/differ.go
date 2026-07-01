@@ -380,7 +380,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Help: "Total number of diff checks skipped because neither the Nomad index nor the git commit changed.",
 		}),
 		staleChecks: f.NewCounter(prometheus.CounterOpts{
-			Name: "nomad_gitops_nomad_staleness_checks_total",
+			Name: "nomad_gitops_staleness_checks_total",
 			Help: "Total number of Nomad diff checks triggered by the staleness check.",
 		}),
 		redactedFields: f.NewCounter(prometheus.CounterOpts{
@@ -392,7 +392,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Help: "Total number of jobs skipped because they did not match the configured selection criteria, by source (hcl or nomad).",
 		}, []string{"source"}),
 		nomadAPIErrors: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "nomad_gitops_nomad_api_errors_total",
+			Name: "nomad_gitops_api_errors_total",
 			Help: "Total number of Nomad API errors by operation.",
 		}, []string{"op"}),
 		lastCheck: f.NewGauge(prometheus.GaugeOpts{
@@ -460,11 +460,11 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Help: "Failed job versions tagged in Nomad by the flap-guard tag mode (--flap-guard=tag) so the block survives version GC.",
 		}, []string{"job"}),
 		nomadTokenRefreshes: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "nomad_gitops_nomad_token_refreshes_total",
+			Name: "nomad_gitops_token_refreshes_total",
 			Help: "Re-reads of the Nomad token file (--nomad-token-file), by result: rotated (the token changed and was applied), error (the file could not be read; previous token kept).",
 		}, []string{"result"}),
 		nomadLogins: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "nomad_gitops_nomad_logins_total",
+			Name: "nomad_gitops_logins_total",
 			Help: "Workload-identity token exchanges via /v1/acl/login (--nomad-login-auth-method), by result: success (a fresh ACL token was obtained and applied) or error (the exchange failed; previous token kept).",
 		}, []string{"result"}),
 	}

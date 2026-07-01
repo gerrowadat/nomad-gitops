@@ -859,7 +859,7 @@ func TestDiffer_ForceCheck_IncrementsStaleCounter(t *testing.T) {
 	}
 	var staleChecks float64
 	for _, mf := range mfs {
-		if mf.GetName() == "nomad_gitops_nomad_staleness_checks_total" {
+		if mf.GetName() == "nomad_gitops_staleness_checks_total" {
 			for _, m := range mf.GetMetric() {
 				staleChecks += m.GetCounter().GetValue()
 			}
