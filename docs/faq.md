@@ -89,12 +89,17 @@ ignored (and surfaced as drift that converges). The live job's meta only drives
 behaviour for jobs Git knows nothing about (a running job with no HCL). See
 [Git is the source of truth](job-selection.md#git-is-the-source-of-truth-for-the-meta-key).
 
-## My Nomad token expired even though I set `identity { env = true }`
+## Workload identity: every diff/plan fails with `500 … UUID must be 36 characters`
 
-`identity { env = true }` captures the token into `NOMAD_TOKEN` once at task
-start and never refreshes it, so it eventually expires. Use `identity { file = true }`
-instead — nomad-botherer auto-detects `${NOMAD_SECRETS_DIR}/nomad_token` and
-re-reads it as Nomad rotates it. See [Nomad access](setup/nomad-access.md).
+The task's raw workload-identity **JWT** cannot be used directly as a Nomad
+token — Nomad accepts it for read RPCs but **rejects it on `Job.Plan`**, which
+nomad-botherer runs on every drift check. The fix is to **exchange** the JWT for
+a real ACL token via `POST /v1/acl/login`: set `--nomad-login-auth-method` (with
+a JWT auth method, a named identity whose `aud` matches it, and a binding rule).
+nomad-botherer does the exchange and refreshes the token before it expires. Full
+setup: [Nomad access → Workload identity](setup/nomad-access.md#workload-identity-recommended-under-nomad).
+(Also don't use `identity { env = true }`: an env token is captured once at task
+start and never refreshed.)
 
 ## An apply is stuck as `blocked_known_failed`
 

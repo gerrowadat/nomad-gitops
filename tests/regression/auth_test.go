@@ -4,6 +4,14 @@ package regression
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,24 +237,90 @@ func TestAuth_WithACLs(t *testing.T) {
 		}
 	})
 
-	t.Run("workload identity: auto-detected secrets file", func(t *testing.T) {
-		jobID := uniqueJobID("auth-wi-auto")
+	t.Run("workload identity: JWT login exchange", func(t *testing.T) {
+		// The real fix for issue #74: exchange a workload-identity JWT for an ACL
+		// token via /v1/acl/login. We stand in for Nomad's identity issuer by
+		// registering a JWT auth method with a static public key and minting a
+		// matching JWT — the exchange path is otherwise identical.
+		jobID := uniqueJobID("auth-wi-login")
 		registerManagedJobWith(t, mgmt, jobID)
-		readTok := createReadToken(t, mgmt, "botherer-wi-auto-"+randomSuffix())
 
-		// Simulate the Nomad task secrets dir: ${NOMAD_SECRETS_DIR}/nomad_token.
-		// With no token configured, nomad-botherer should auto-detect it.
-		secretsDir := t.TempDir()
-		writeTokenFile(t, filepath.Join(secretsDir, wiTokenFileName), readTok.SecretID)
-		t.Setenv("NOMAD_SECRETS_DIR", secretsDir)
+		suffix := randomSuffix()
+		methodName := "gitops-login-" + suffix
+		policyName := "gitops-login-" + suffix
+		subject := "botherer-login-" + suffix
 
-		cfg := aclDiffCfg(addr) // no token, no explicit file
-		d, err := nomad.NewDifferWithRegistry(cfg, prometheus.NewRegistry())
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate RSA key: %v", err)
+		}
+		der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+		if err != nil {
+			t.Fatalf("marshal public key: %v", err)
+		}
+		pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+
+		// Policy the login should grant (read is enough to see the job).
+		if _, err := mgmt.ACLPolicies().Upsert(&nomadapi.ACLPolicy{
+			Name:  policyName,
+			Rules: `namespace "default" { capabilities = ["list-jobs", "read-job"] }`,
+		}, nil); err != nil {
+			t.Fatalf("upsert policy: %v", err)
+		}
+		t.Cleanup(func() { mgmt.ACLPolicies().Delete(policyName, nil) })
+
+		// JWT auth method trusting our static key.
+		if _, _, err := mgmt.ACLAuthMethods().Create(&nomadapi.ACLAuthMethod{
+			Name:          methodName,
+			Type:          nomadapi.ACLAuthMethodTypeJWT,
+			TokenLocality: nomadapi.ACLAuthMethodTokenLocalityLocal,
+			MaxTokenTTL:   10 * time.Minute,
+			Config: &nomadapi.ACLAuthMethodConfig{
+				JWTValidationPubKeys: []string{pubPEM},
+				BoundAudiences:       []string{"nomad.io"},
+				SigningAlgs:          []string{"RS256"},
+				ClaimMappings:        map[string]string{"sub": "sub"},
+			},
+		}, nil); err != nil {
+			t.Fatalf("create auth method: %v", err)
+		}
+		t.Cleanup(func() { mgmt.ACLAuthMethods().Delete(methodName, nil) })
+
+		// Binding rule: this subject -> the policy.
+		if _, _, err := mgmt.ACLBindingRules().Create(&nomadapi.ACLBindingRule{
+			AuthMethod: methodName,
+			BindType:   nomadapi.ACLBindingRuleBindTypePolicy,
+			BindName:   policyName,
+			Selector:   `value.sub == "` + subject + `"`,
+		}, nil); err != nil {
+			t.Fatalf("create binding rule: %v", err)
+		}
+
+		now := time.Now()
+		jwt := mintRS256JWT(t, priv, map[string]any{
+			"aud": []string{"nomad.io"},
+			"sub": subject,
+			"iss": "botherer-test",
+			"iat": now.Unix(),
+			"nbf": now.Unix(),
+			"exp": now.Add(5 * time.Minute).Unix(),
+		})
+		jwtPath := filepath.Join(t.TempDir(), "identity.jwt")
+		writeTokenFile(t, jwtPath, jwt)
+
+		cfg := aclDiffCfg(addr)
+		cfg.NomadLoginAuthMethod = methodName
+		cfg.NomadLoginJWTFile = jwtPath
+		reg := prometheus.NewRegistry()
+		d, err := nomad.NewDifferWithRegistry(cfg, reg) // exchanges the JWT at startup
 		if err != nil {
 			t.Fatalf("NewDifferWithRegistry: %v", err)
 		}
-		if !differSeesJob(t, d, jobID, "wi-auto") {
-			t.Error("a differ should auto-detect ${NOMAD_SECRETS_DIR}/nomad_token and authenticate with it")
+		if got := gatherCounter(t, reg, "nomad_botherer_nomad_logins_total"); got == 0 {
+			t.Fatal("expected a successful /v1/acl/login exchange at startup")
+		}
+		if !differSeesJob(t, d, jobID, "wi-login") {
+			t.Error("a differ authenticating via login exchange should detect the managed job")
 		}
 	})
 
@@ -312,4 +386,24 @@ func writeTokenFile(t *testing.T, path, token string) {
 	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
 		t.Fatalf("write token file %s: %v", path, err)
 	}
+}
+
+// mintRS256JWT builds and RS256-signs a JWT with the given claims, so a test can
+// present a workload-identity-style token to a JWT auth method configured with
+// the matching public key. Avoids a JWT dependency.
+func mintRS256JWT(t *testing.T, priv *rsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	b64 := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+	header := b64([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	signingInput := header + "." + b64(payloadJSON)
+	sum := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return signingInput + "." + b64(sig)
 }

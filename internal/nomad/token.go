@@ -14,33 +14,41 @@ import (
 	"github.com/gerrowadat/nomad-botherer/internal/config"
 )
 
-// Authentication to the Nomad API. Three sources, in precedence order:
+// Authentication to the Nomad API. Modes, in precedence order:
 //
-//  1. A token file (--nomad-token-file) — preferred. Re-read periodically so a
-//     rotating token stays current. This is how Nomad workload identity works:
-//     when nomad-botherer runs as a Nomad task with `identity { file = true }`,
-//     Nomad writes the task's identity token to ${NOMAD_SECRETS_DIR}/nomad_token
-//     and rotates it before expiry. The file is auto-detected at that path when
-//     no token is configured at all, so a correctly-set-up job needs no token
-//     flags.
-//  2. A static token (--nomad-token / NOMAD_TOKEN) — for manual running and
-//     testing. Does not refresh; fine for short-lived or non-expiring tokens.
-//  3. None — anonymous access, which works only when the cluster has ACLs
-//     disabled.
-//
-// A static token does not refresh, so under Nomad prefer the file source: a
-// static NOMAD_TOKEN (including one injected by `identity { env = true }`) will
-// eventually expire and is not re-read.
+//  1. Workload-identity login (--nomad-login-auth-method) — the working way to
+//     use Nomad workload identity. The identity JWT is exchanged for a real ACL
+//     token (SecretID) via POST /v1/acl/login, and re-exchanged before it
+//     expires. A raw WI JWT authenticates read RPCs but is *rejected* by
+//     Nomad's Job.Plan RPC ("UUID must be 36 characters"), which nomad-botherer
+//     needs for every drift check — so the JWT cannot be used directly as a
+//     token (issue #74). Login exchange is the fix.
+//  2. A token file (--nomad-token-file) — a real ACL SecretID in a file, re-read
+//     periodically. For a sidecar-written token, or a rotating static token.
+//  3. A static token (--nomad-token / NOMAD_TOKEN) — manual running and testing.
+//  4. None — anonymous, which works only when the cluster has ACLs disabled.
 
 // wiTokenFilename is the file Nomad writes the default workload-identity token
-// to under the task secrets dir when `identity { file = true }` is set.
+// (a JWT) to under the task secrets dir when `identity { file = true }` is set.
 const wiTokenFilename = "nomad_token"
 
-// resolveNomadToken decides the initial token to authenticate with and, when
-// the token is sourced from a file, the path to keep re-reading. watchPath is
-// empty for the static and anonymous cases. An explicitly-configured token file
-// that cannot be read is a fatal misconfiguration and returns an error; the
-// auto-detected path is only used when it already exists.
+const (
+	// minLoginRefresh floors the re-login delay so a very short token TTL cannot
+	// spin the login loop.
+	minLoginRefresh = 30 * time.Second
+	// loginRetryBackoff is the delay before retrying after a failed login.
+	loginRetryBackoff = 15 * time.Second
+	// defaultLoginRefresh is used when an exchanged token carries no expiry
+	// (unusual — WI login tokens are TTL-bounded).
+	defaultLoginRefresh = 5 * time.Minute
+)
+
+// resolveNomadToken decides the initial token to authenticate with (for the
+// file and static modes) and, when the token is sourced from a file, the path
+// to keep re-reading. It does not handle login mode — the caller checks
+// NomadLoginAuthMethod first. watchPath is empty for the static and anonymous
+// cases. An explicitly-configured token file that cannot be read is a fatal
+// misconfiguration and returns an error.
 func resolveNomadToken(cfg *config.Config) (token, watchPath string, err error) {
 	switch {
 	case cfg.NomadTokenFile != "":
@@ -52,14 +60,9 @@ func resolveNomadToken(cfg *config.Config) (token, watchPath string, err error) 
 	case cfg.NomadToken != "":
 		return cfg.NomadToken, "", nil
 	default:
-		// No token configured: auto-detect the workload-identity token file so a
-		// job that sets `identity { file = true }` needs no token configuration.
-		watchPath = defaultWorkloadTokenPath()
-	}
-
-	if watchPath == "" {
 		return "", "", nil // anonymous
 	}
+
 	token, err = readTokenFile(watchPath)
 	if err != nil {
 		return "", "", err
@@ -67,16 +70,22 @@ func resolveNomadToken(cfg *config.Config) (token, watchPath string, err error) 
 	return token, watchPath, nil
 }
 
+// loginJWTPath resolves the workload-identity JWT file to exchange in login
+// mode: the explicit --nomad-login-jwt-file, else ${NOMAD_SECRETS_DIR}/nomad_token
+// (the default identity), else "".
+func loginJWTPath(cfg *config.Config) string {
+	if cfg.NomadLoginJWTFile != "" {
+		return cfg.NomadLoginJWTFile
+	}
+	if dir := os.Getenv("NOMAD_SECRETS_DIR"); dir != "" {
+		return filepath.Join(dir, wiTokenFilename)
+	}
+	return ""
+}
+
 // defaultWorkloadTokenPath returns ${NOMAD_SECRETS_DIR}/nomad_token when that
-// file might be present, else "". NOMAD_SECRETS_DIR is set for every Nomad
-// task, but the token file is only written when the job opts in with
-// `identity { file = true }`, so a definitively-absent file means "workload
-// identity not configured" and we fall through to the other sources.
-//
-// Only the not-exist case is suppressed: any other stat error (permissions, IO)
-// means the file is probably there but unreadable, which on an ACL-enabled
-// cluster should surface as a startup error rather than silently degrade to
-// anonymous access. Returning the path lets readTokenFile report it.
+// file exists, else "". Used only to detect a workload-identity deployment that
+// has not configured login, so a clear hint can be logged.
 func defaultWorkloadTokenPath() string {
 	dir := os.Getenv("NOMAD_SECRETS_DIR")
 	if dir == "" {
@@ -89,7 +98,15 @@ func defaultWorkloadTokenPath() string {
 	return p
 }
 
-// readTokenFile reads and trims a token from a file.
+// looksLikeJWT reports whether s is (probably) a JWT rather than an ACL
+// SecretID, so a misconfiguration (feeding a raw WI JWT as a token) can be
+// flagged. A SecretID is a 36-char UUID; a JWT is a longer dotted base64url
+// string, conventionally starting "ey".
+func looksLikeJWT(s string) bool {
+	return strings.HasPrefix(s, "ey") && strings.Count(s, ".") == 2
+}
+
+// readTokenFile reads and trims a token (SecretID or JWT) from a file.
 func readTokenFile(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -121,6 +138,48 @@ func refreshTokenFile(ctx context.Context, watchPath string, interval time.Durat
 				current = tok
 				setToken(tok)
 			}
+		}
+	}
+}
+
+// nextLoginDelay returns how long until the next re-login: half the remaining
+// lifetime, so the token is always refreshed well before it expires. Floored by
+// minLoginRefresh; falls back to defaultLoginRefresh when the token has no
+// expiry.
+func nextLoginDelay(expiry *time.Time) time.Duration {
+	if expiry == nil {
+		return defaultLoginRefresh
+	}
+	d := time.Until(*expiry) / 2
+	if d < minLoginRefresh {
+		d = minLoginRefresh
+	}
+	return d
+}
+
+// runLoginRefresher re-exchanges the workload-identity JWT for a fresh ACL token
+// before the current one expires. firstDelay is when to attempt the next login
+// (computed by the caller from the startup login's expiry, or a short backoff if
+// startup login failed). login performs the exchange, returning the new SecretID
+// and its expiry. apply installs the token; onErr reports a failed exchange. It
+// blocks until ctx is cancelled. login/apply/onErr are injected so the loop is
+// testable without a live Nomad client.
+func runLoginRefresher(ctx context.Context, firstDelay time.Duration, login func() (secretID string, expiry *time.Time, err error), apply func(string), onErr func(error)) {
+	timer := time.NewTimer(firstDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			secretID, expiry, err := login()
+			if err != nil {
+				onErr(err)
+				timer.Reset(loginRetryBackoff)
+				continue
+			}
+			apply(secretID)
+			timer.Reset(nextLoginDelay(expiry))
 		}
 	}
 }

@@ -24,15 +24,27 @@ type Config struct {
 	NomadToken     string
 	NomadNamespace string
 
-	// NomadTokenFile is a path to a file containing the Nomad ACL token, re-read
-	// periodically so a rotating token (Nomad workload identity) stays current.
-	// When running under Nomad with workload identity, this is the preferred
-	// authentication method and is auto-detected at ${NOMAD_SECRETS_DIR}/nomad_token
-	// when no static token is set. A static --nomad-token is retained for manual
-	// running and testing.
+	// NomadTokenFile is a path to a file containing a Nomad ACL token SecretID,
+	// re-read periodically so a rotating token stays current. Use it for a real
+	// SecretID written to a file (e.g. by a sidecar). Note: this must be a
+	// 36-char ACL SecretID, not a workload-identity JWT — a raw WI JWT is
+	// rejected by Nomad's Job.Plan RPC (see NomadLoginAuthMethod).
 	NomadTokenFile string
 	// NomadTokenPollInterval is how often the token file is re-read for changes.
 	NomadTokenPollInterval time.Duration
+
+	// NomadLoginAuthMethod, when set, enables Nomad workload-identity login: the
+	// identity JWT (NomadLoginJWTFile) is exchanged for a real ACL token via
+	// POST /v1/acl/login against this JWT auth method, and re-exchanged before
+	// it expires. This is the working way to use workload identity — a raw WI
+	// JWT authenticates read RPCs but is rejected by Job.Plan, which
+	// nomad-botherer needs for every drift check (issue #74).
+	NomadLoginAuthMethod string
+	// NomadLoginJWTFile is the path to the workload-identity JWT to exchange.
+	// Defaults to ${NOMAD_SECRETS_DIR}/nomad_token; point it at a named
+	// identity's file (nomad_<name>.jwt) when the auth method's audience does
+	// not match the default identity.
+	NomadLoginJWTFile string
 
 	// Server
 	ListenAddr    string
@@ -125,9 +137,11 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.StringVar(&c.GitSSHKnownHostsFile, "git-ssh-known-hosts", envOrDefault("GIT_SSH_KNOWN_HOSTS", ""), "Path to known_hosts file for SSH host key verification (defaults to ~/.ssh/known_hosts; set to empty string to use system defaults)")
 
 	fs.StringVar(&c.NomadAddr, "nomad-addr", envOrDefault("NOMAD_ADDR", "http://127.0.0.1:4646"), "Nomad API address")
-	fs.StringVar(&c.NomadToken, "nomad-token", envOrDefault("NOMAD_TOKEN", ""), "Nomad ACL token (static). Intended for manual running and testing; for a deployment under Nomad, prefer workload identity (see --nomad-token-file).")
-	fs.StringVar(&c.NomadTokenFile, "nomad-token-file", envOrDefault("NOMAD_TOKEN_FILE", ""), "Path to a file containing the Nomad ACL token, re-read periodically so a rotating workload-identity token stays current. Takes precedence over --nomad-token. When unset and no static token is given, ${NOMAD_SECRETS_DIR}/nomad_token is used automatically if present (Nomad workload identity).")
+	fs.StringVar(&c.NomadToken, "nomad-token", envOrDefault("NOMAD_TOKEN", ""), "Nomad ACL token (static SecretID). Intended for manual running and testing; for a deployment under Nomad, use workload identity (see --nomad-login-auth-method).")
+	fs.StringVar(&c.NomadTokenFile, "nomad-token-file", envOrDefault("NOMAD_TOKEN_FILE", ""), "Path to a file containing a Nomad ACL token SecretID, re-read periodically so a rotating token stays current. Must be a 36-char SecretID, not a workload-identity JWT. Takes precedence over --nomad-token.")
 	fs.DurationVar(&c.NomadTokenPollInterval, "nomad-token-poll-interval", envDurationOrDefault("NOMAD_TOKEN_POLL_INTERVAL", 30*time.Second), "How often to re-read the Nomad token file (--nomad-token-file) for a rotated token.")
+	fs.StringVar(&c.NomadLoginAuthMethod, "nomad-login-auth-method", envOrDefault("NOMAD_LOGIN_AUTH_METHOD", ""), "Enable Nomad workload-identity login: name of the JWT ACL auth method to exchange the identity JWT (--nomad-login-jwt-file) for an ACL token via /v1/acl/login, re-exchanged before it expires. This is the working way to use workload identity — a raw WI JWT is rejected by Nomad's Job.Plan RPC.")
+	fs.StringVar(&c.NomadLoginJWTFile, "nomad-login-jwt-file", envOrDefault("NOMAD_LOGIN_JWT_FILE", ""), "Path to the workload-identity JWT to exchange (login mode). Defaults to ${NOMAD_SECRETS_DIR}/nomad_token; point it at a named identity's file (nomad_<name>.jwt) when the auth method audience does not match the default identity.")
 	fs.StringVar(&c.NomadNamespace, "nomad-namespace", envOrDefault("NOMAD_NAMESPACE", "default"), "Nomad namespace")
 
 	fs.StringVar(&c.ListenAddr, "listen-addr", envOrDefault("LISTEN_ADDR", ":8080"), "HTTP listen address")

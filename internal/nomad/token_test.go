@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -67,48 +68,83 @@ func TestResolveNomadToken_FileExplicit_MissingIsError(t *testing.T) {
 	}
 }
 
-func TestResolveNomadToken_AutoDetectWorkloadIdentity(t *testing.T) {
+// A raw workload-identity token file is no longer auto-detected as a token: the
+// raw WI JWT does not work with Job.Plan (issue #74), so with no token
+// configured resolveNomadToken returns anonymous — login mode is handled
+// separately by the caller.
+func TestResolveNomadToken_NoAutoDetectOfWIFile(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, wiTokenFilename), "wi-token-123\n")
+	writeFile(t, filepath.Join(dir, wiTokenFilename), "ey.some.jwt")
 	t.Setenv("NOMAD_SECRETS_DIR", dir)
 
 	tok, watch, err := resolveNomadToken(&config.Config{}) // no token configured
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tok != "wi-token-123" {
-		t.Errorf("auto-detected workload-identity token: want wi-token-123, got %q", tok)
-	}
-	if watch != filepath.Join(dir, wiTokenFilename) {
-		t.Errorf("watch path: want the WI token file, got %q", watch)
+	if tok != "" || watch != "" {
+		t.Errorf("WI token file must not be auto-detected as a token, got (%q, %q)", tok, watch)
 	}
 }
 
-func TestResolveNomadToken_StaticBeatsAutoDetect(t *testing.T) {
+func TestResolveNomadToken_StaticIgnoresWIFile(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, wiTokenFilename), "wi-token-123")
 	t.Setenv("NOMAD_SECRETS_DIR", dir)
 
-	// A static token is set: it should be used as-is, not the auto-detected file,
-	// so manual testing with --nomad-token works even inside a task environment.
 	tok, watch, err := resolveNomadToken(&config.Config{NomadToken: "static-abc"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if tok != "static-abc" || watch != "" {
-		t.Errorf("static token should win over auto-detect, got (%q, %q)", tok, watch)
+		t.Errorf("static token should be used as-is, got (%q, %q)", tok, watch)
 	}
 }
 
-func TestResolveNomadToken_NoAutoDetectWhenFileAbsent(t *testing.T) {
-	dir := t.TempDir() // NOMAD_SECRETS_DIR set but no nomad_token file present
-	t.Setenv("NOMAD_SECRETS_DIR", dir)
-	tok, watch, err := resolveNomadToken(&config.Config{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestLooksLikeJWT(t *testing.T) {
+	jwt := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"
+	if !looksLikeJWT(jwt) {
+		t.Errorf("expected %q to look like a JWT", jwt)
 	}
-	if tok != "" || watch != "" {
-		t.Errorf("no auto-detect without the token file present, got (%q, %q)", tok, watch)
+	if looksLikeJWT("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
+		t.Error("a UUID SecretID must not look like a JWT")
+	}
+	if looksLikeJWT("") {
+		t.Error("empty string must not look like a JWT")
+	}
+}
+
+func TestLoginJWTPath(t *testing.T) {
+	// Explicit flag wins.
+	if got := loginJWTPath(&config.Config{NomadLoginJWTFile: "/x/named.jwt"}); got != "/x/named.jwt" {
+		t.Errorf("explicit jwt file: got %q", got)
+	}
+	// Default to ${NOMAD_SECRETS_DIR}/nomad_token.
+	t.Setenv("NOMAD_SECRETS_DIR", "/secrets")
+	if got := loginJWTPath(&config.Config{}); got != filepath.Join("/secrets", wiTokenFilename) {
+		t.Errorf("default jwt file: got %q", got)
+	}
+	// Nothing available.
+	t.Setenv("NOMAD_SECRETS_DIR", "")
+	if got := loginJWTPath(&config.Config{}); got != "" {
+		t.Errorf("no jwt file available: got %q", got)
+	}
+}
+
+func TestNextLoginDelay(t *testing.T) {
+	// Half the remaining lifetime.
+	exp := time.Now().Add(30 * time.Minute)
+	d := nextLoginDelay(&exp)
+	if d < 14*time.Minute || d > 15*time.Minute {
+		t.Errorf("half-life delay for 30m TTL: want ~15m, got %v", d)
+	}
+	// Floored for a very short TTL.
+	short := time.Now().Add(10 * time.Second)
+	if got := nextLoginDelay(&short); got != minLoginRefresh {
+		t.Errorf("short TTL should floor to %v, got %v", minLoginRefresh, got)
+	}
+	// No expiry falls back.
+	if got := nextLoginDelay(nil); got != defaultLoginRefresh {
+		t.Errorf("nil expiry should fall back to %v, got %v", defaultLoginRefresh, got)
 	}
 }
 
@@ -227,5 +263,94 @@ func TestRefreshTokenFile_StopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("refresher did not stop after context cancel")
+	}
+}
+
+func TestRunLoginRefresher_AppliesOnSuccess(t *testing.T) {
+	exp := time.Now().Add(30 * time.Minute)
+	var mu sync.Mutex
+	var applied []string
+	login := func() (string, *time.Time, error) { return "sid-1", &exp, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runLoginRefresher(ctx, 5*time.Millisecond, login,
+			func(s string) { mu.Lock(); applied = append(applied, s); mu.Unlock() },
+			func(error) { t.Error("unexpected error callback") })
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(applied)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("login token was not applied")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	mu.Lock()
+	if applied[0] != "sid-1" {
+		t.Errorf("applied token: want sid-1, got %q", applied[0])
+	}
+	mu.Unlock()
+	cancel()
+	<-done
+}
+
+func TestRunLoginRefresher_ReportsError(t *testing.T) {
+	var mu sync.Mutex
+	errCount := 0
+	login := func() (string, *time.Time, error) { return "", nil, errors.New("login rejected") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runLoginRefresher(ctx, 5*time.Millisecond, login,
+			func(string) { t.Error("apply must not be called on error") },
+			func(error) { mu.Lock(); errCount++; mu.Unlock() })
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := errCount
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("login error was not reported")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+}
+
+func TestRunLoginRefresher_StopsOnContextCancel(t *testing.T) {
+	login := func() (string, *time.Time, error) { return "sid", nil, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		// A long first delay so nothing fires before cancel.
+		runLoginRefresher(ctx, time.Hour, login, func(string) {}, func(error) {})
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("login refresher did not stop after context cancel")
 	}
 }

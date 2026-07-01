@@ -14,9 +14,11 @@ read at startup; flags override them when explicitly passed.
 | `--git-ssh-key-password` | `GIT_SSH_KEY_PASSWORD` | | SSH key passphrase |
 | `--git-ssh-known-hosts` | `GIT_SSH_KNOWN_HOSTS` | `~/.ssh/known_hosts` | Path to known_hosts file for SSH host key verification; required when using SSH auth. Defaults to the system known_hosts locations. Omit to allow the default search, or set explicitly to a specific file. |
 | `--nomad-addr` | `NOMAD_ADDR` | `http://127.0.0.1:4646` | Nomad API address |
-| `--nomad-token` | `NOMAD_TOKEN` | | Nomad ACL token (static). For manual running and testing. Does not refresh; under Nomad prefer workload identity. See [Nomad access](setup/nomad-access.md). |
-| `--nomad-token-file` | `NOMAD_TOKEN_FILE` | | Path to a file holding the Nomad ACL token, re-read periodically so a rotating workload-identity token stays current. Takes precedence over `--nomad-token`. Auto-detected at `${NOMAD_SECRETS_DIR}/nomad_token` when no static token is set. See [Nomad access](setup/nomad-access.md). |
+| `--nomad-token` | `NOMAD_TOKEN` | | Nomad ACL token (static SecretID). For manual running and testing. Does not refresh; under Nomad use workload identity. See [Nomad access](setup/nomad-access.md). |
+| `--nomad-token-file` | `NOMAD_TOKEN_FILE` | | Path to a file holding a Nomad ACL token **SecretID** (not a WI JWT), re-read periodically so a rotating token stays current. Takes precedence over `--nomad-token`. See [Nomad access](setup/nomad-access.md). |
 | `--nomad-token-poll-interval` | `NOMAD_TOKEN_POLL_INTERVAL` | `30s` | How often to re-read `--nomad-token-file` for a rotated token. |
+| `--nomad-login-auth-method` | `NOMAD_LOGIN_AUTH_METHOD` | | Enable Nomad **workload-identity login**: name of the JWT auth method to exchange the identity JWT for an ACL token via `/v1/acl/login`, re-exchanged before expiry. The working way to use workload identity — a raw WI JWT is rejected by `Job.Plan`. See [Nomad access](setup/nomad-access.md#workload-identity-recommended-under-nomad). |
+| `--nomad-login-jwt-file` | `NOMAD_LOGIN_JWT_FILE` | `${NOMAD_SECRETS_DIR}/nomad_token` | Path to the workload-identity JWT to exchange (login mode). Point it at a named identity's file (`nomad_<name>.jwt`) when the auth method audience does not match the default identity. |
 | `--nomad-namespace` | `NOMAD_NAMESPACE` | `default` | Nomad namespace |
 | `--listen-addr` | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `--webhook-secret` | `WEBHOOK_SECRET` | | GitHub webhook HMAC secret |

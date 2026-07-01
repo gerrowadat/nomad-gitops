@@ -1,8 +1,16 @@
 # Design: authenticating to Nomad (workload identity)
 
-**Status**: implemented — Unreleased. See the CHANGELOG and the README
-"Authenticating to Nomad" section.
-**Date**: implemented 2026-06-23
+**Status**: implemented v0.9.0; **corrected in v0.9.1**. The original design
+(below) used the workload-identity token file *directly* as the Nomad token.
+That does not work: a raw WI JWT is rejected by Nomad's `Job.Plan` RPC
+(`500 … UUID must be 36 characters`), which nomad-botherer runs on every check
+([issue #74](https://github.com/gerrowadat/nomad-botherer/issues/74)). v0.9.1
+replaces it with a **token exchange** — the JWT is exchanged for a real ACL
+token via `POST /v1/acl/login` (`--nomad-login-auth-method`) and re-exchanged
+before it expires. The file-token source (`--nomad-token-file`) remains for a
+genuine SecretID. See `docs/setup/nomad-access.md`. The rest of this record is
+the original v0.9.0 thinking, kept for history.
+**Date**: implemented 2026-06-23; corrected 2026-07-01
 
 Related: [change-checkpointing.md](../proposals/change-checkpointing.md) (the
 "no external state, schedulable anywhere" principle this builds on).

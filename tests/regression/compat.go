@@ -52,6 +52,30 @@ type VersionRecord struct {
 var TestedVersions = []VersionRecord{
 	{
 		NomadVersion:    "2.0.2",
+		BothererRelease: "v0.9.1",
+		TestedAt:        time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		Passed:          true,
+	},
+	{
+		NomadVersion:    "1.11.3",
+		BothererRelease: "v0.9.1",
+		TestedAt:        time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		Passed:          true,
+	},
+	{
+		NomadVersion:    "1.10.5",
+		BothererRelease: "v0.9.1",
+		TestedAt:        time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		Passed:          true,
+	},
+	{
+		NomadVersion:    "1.9.6",
+		BothererRelease: "v0.9.1",
+		TestedAt:        time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		Passed:          true,
+	},
+	{
+		NomadVersion:    "2.0.2",
 		BothererRelease: "v0.9.0",
 		TestedAt:        time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
 		Passed:          true,

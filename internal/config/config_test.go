@@ -110,6 +110,7 @@ func TestLoadFromArgs_Defaults(t *testing.T) {
 	for _, k := range []string{
 		"GIT_REPO_URL", "GIT_BRANCH", "NOMAD_ADDR", "NOMAD_NAMESPACE",
 		"NOMAD_TOKEN", "NOMAD_TOKEN_FILE", "NOMAD_TOKEN_POLL_INTERVAL",
+		"NOMAD_LOGIN_AUTH_METHOD", "NOMAD_LOGIN_JWT_FILE",
 		"LISTEN_ADDR", "WEBHOOK_PATH", "LOG_LEVEL", "POLL_INTERVAL", "DIFF_INTERVAL",
 		"JOB_SELECTOR_GLOB", "MANAGED_META_PREFIX",
 	} {
@@ -196,6 +197,56 @@ func TestLoadFromArgs_NomadTokenEnvVars(t *testing.T) {
 	}
 	if cfg.NomadTokenFile != "/run/nomad_token" || cfg.NomadTokenPollInterval != time.Minute {
 		t.Errorf("nomad token env vars not honoured: file=%q poll=%v", cfg.NomadTokenFile, cfg.NomadTokenPollInterval)
+	}
+}
+
+func TestLoadFromArgs_NomadLoginFlagDefaults(t *testing.T) {
+	for _, k := range []string{"NOMAD_LOGIN_AUTH_METHOD", "NOMAD_LOGIN_JWT_FILE"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NomadLoginAuthMethod != "" || cfg.NomadLoginJWTFile != "" {
+		t.Errorf("login defaults: want empty, got method=%q jwt=%q", cfg.NomadLoginAuthMethod, cfg.NomadLoginJWTFile)
+	}
+}
+
+func TestLoadFromArgs_NomadLoginFlags(t *testing.T) {
+	for _, k := range []string{"NOMAD_LOGIN_AUTH_METHOD", "NOMAD_LOGIN_JWT_FILE"} {
+		os.Unsetenv(k)
+	}
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--nomad-login-auth-method", "nomad-workloads",
+		"--nomad-login-jwt-file", "/secrets/nomad_nomad-api.jwt",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NomadLoginAuthMethod != "nomad-workloads" {
+		t.Errorf("NomadLoginAuthMethod: want nomad-workloads, got %q", cfg.NomadLoginAuthMethod)
+	}
+	if cfg.NomadLoginJWTFile != "/secrets/nomad_nomad-api.jwt" {
+		t.Errorf("NomadLoginJWTFile: want /secrets/nomad_nomad-api.jwt, got %q", cfg.NomadLoginJWTFile)
+	}
+}
+
+func TestLoadFromArgs_NomadLoginEnvVars(t *testing.T) {
+	os.Setenv("NOMAD_LOGIN_AUTH_METHOD", "wi")
+	os.Setenv("NOMAD_LOGIN_JWT_FILE", "/run/id.jwt")
+	t.Cleanup(func() {
+		for _, k := range []string{"NOMAD_LOGIN_AUTH_METHOD", "NOMAD_LOGIN_JWT_FILE"} {
+			os.Unsetenv(k)
+		}
+	})
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NomadLoginAuthMethod != "wi" || cfg.NomadLoginJWTFile != "/run/id.jwt" {
+		t.Errorf("login env vars not honoured: method=%q jwt=%q", cfg.NomadLoginAuthMethod, cfg.NomadLoginJWTFile)
 	}
 }
 

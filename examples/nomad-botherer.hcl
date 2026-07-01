@@ -14,21 +14,26 @@ job "nomad-botherer" {
   # does not need elevated privileges: read access (list-jobs, read-job) is
   # all that is required for detection; add submit-job for the apply side.
   #
-  # On an ACL-enabled cluster, grant that access via workload identity (see the
-  # identity {} block on the task below). Once, after first submitting the job,
-  # bind an ACL policy to this job's identity:
+  # On an ACL-enabled cluster, use workload-identity LOGIN: nomad-botherer
+  # exchanges the task's identity JWT for a real ACL token via /v1/acl/login and
+  # refreshes it before it expires. (A raw WI JWT cannot be used directly — Nomad
+  # rejects it on Job.Plan, which every drift check needs; see issue #74.)
   #
-  #   # nomad-botherer-policy.hcl
-  #   namespace "default" {
-  #     capabilities = ["list-jobs", "read-job", "submit-job"]
-  #   }
+  # One-time cluster setup:
+  #   1. A JWT auth method trusting Nomad's own JWKS (e.g. named "nomad-workloads",
+  #      bound_audiences=["nomad.io"], max_token_ttl=30m).
+  #   2. The named identity {} block on the task below (aud matches the method).
+  #   3. A policy + binding rule mapping this job to it:
+  #        # nomad-botherer-policy.hcl
+  #        namespace "default" { capabilities = ["list-jobs", "read-job", "submit-job"] }
+  #        nomad acl policy apply nomad-botherer nomad-botherer-policy.hcl
+  #        nomad acl binding-rule create -auth-method nomad-workloads \
+  #          -bind-type policy -bind-name nomad-botherer \
+  #          -selector 'value.nomad_job_id == "nomad-botherer"'
+  #   4. Set NOMAD_LOGIN_AUTH_METHOD / NOMAD_LOGIN_JWT_FILE in env {} below.
   #
-  #   nomad acl policy apply \
-  #     -namespace default -job nomad-botherer \
-  #     nomad-botherer nomad-botherer-policy.hcl
-  #
-  # No token to create, distribute, or rotate. (Drop submit-job for a
-  # detection-only deployment.)
+  # submit-job is required for Job.Plan even in detection-only mode. Full setup:
+  # docs/setup/nomad-access.md.
   namespace   = "default"
   datacenters = ["dc1"]
   type        = "service"
@@ -70,14 +75,17 @@ job "nomad-botherer" {
 
       # ── Nomad authentication via workload identity ──────────────────────────
       #
-      # Exposes this task's own Nomad identity token as a file at
-      # ${NOMAD_SECRETS_DIR}/nomad_token, which Nomad rotates before it expires.
-      # nomad-botherer auto-detects and re-reads that file — no NOMAD_TOKEN to
-      # set or rotate. Pair this with the ACL policy shown in the job comment
-      # above. Do NOT set `env = true` here: an env token is captured once at
-      # task start and never refreshed, so it would eventually expire.
+      # A NAMED identity whose audience matches the JWT auth method (step 1 in
+      # the job comment above). Written to ${NOMAD_SECRETS_DIR}/nomad_nomad-api.jwt,
+      # which nomad-botherer exchanges for an ACL token via /v1/acl/login (login
+      # mode, enabled by NOMAD_LOGIN_AUTH_METHOD below) and refreshes before it
+      # expires. Do NOT set `env = true`: an env token is captured once at task
+      # start and never refreshed.
       identity {
+        name = "nomad-api"
+        aud  = ["nomad.io"]
         file = true
+        ttl  = "1h" # JWT lifetime; Nomad rotates the file before it expires
       }
 
       env {
@@ -123,15 +131,17 @@ job "nomad-botherer" {
         # is reachable on the loopback address.
         NOMAD_ADDR = "http://127.0.0.1:4646"
 
-        # Authentication is handled by workload identity (the identity {} block
-        # below) plus the ACL policy described in the job comment above, so no
-        # token needs to be set here.
+        # Workload-identity login: exchange the identity JWT (from the named
+        # identity {} block above) for an ACL token. Setting the auth method
+        # enables login mode; point the JWT file at the named-identity file.
+        NOMAD_LOGIN_AUTH_METHOD = "nomad-workloads"
+        NOMAD_LOGIN_JWT_FILE    = "${NOMAD_SECRETS_DIR}/nomad_nomad-api.jwt"
         #
-        # For manual/testing runs outside Nomad you can instead pass a static
-        # token (it does not refresh, so it is unsuitable for long-running use
-        # with short-lived tokens):
+        # For manual/testing runs outside Nomad, instead pass a static ACL token
+        # SecretID (does not refresh; unsuitable for long-running use with
+        # short-lived tokens):
         #   NOMAD_TOKEN = ""
-        # or point at a token file that nomad-botherer re-reads:
+        # or point at a file containing a SecretID that nomad-botherer re-reads:
         #   NOMAD_TOKEN_FILE = "/secrets/nomad_token"
 
         # Namespace to watch. Defaults to "default".

@@ -197,6 +197,15 @@ type Differ struct {
 	tokenFilePath     string
 	tokenPollInterval time.Duration
 	initialToken      string
+	// Workload-identity login mode: loginAuthMethod (non-empty enables it) is the
+	// JWT auth method; loginJWTFile is the identity JWT to exchange. loginExpiry
+	// is the startup token's expiry (nil if login not used or startup login
+	// failed), loginFailed records a failed startup login so the refresher
+	// retries promptly.
+	loginAuthMethod   string
+	loginJWTFile      string
+	loginExpiry       *time.Time
+	loginFailed       bool
 	namespace         string
 	includeDeadJobs   bool
 	jobSelectorGlob   string
@@ -301,6 +310,7 @@ type Differ struct {
 	rollbacks                      *prometheus.CounterVec
 	failedVersionsTagged           *prometheus.CounterVec
 	nomadTokenRefreshes            *prometheus.CounterVec
+	nomadLogins                    *prometheus.CounterVec
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -451,7 +461,11 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		}, []string{"job"}),
 		nomadTokenRefreshes: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_botherer_nomad_token_refreshes_total",
-			Help: "Re-reads of the Nomad token file (--nomad-token-file / workload identity), by result: rotated (the token changed and was applied), error (the file could not be read; previous token kept).",
+			Help: "Re-reads of the Nomad token file (--nomad-token-file), by result: rotated (the token changed and was applied), error (the file could not be read; previous token kept).",
+		}, []string{"result"}),
+		nomadLogins: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_botherer_nomad_logins_total",
+			Help: "Workload-identity token exchanges via /v1/acl/login (--nomad-login-auth-method), by result: success (a fresh ACL token was obtained and applied) or error (the exchange failed; previous token kept).",
 		}, []string{"result"}),
 	}
 
@@ -474,6 +488,9 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	for _, r := range []string{"rotated", "error"} {
 		d.nomadTokenRefreshes.WithLabelValues(r)
 	}
+	for _, r := range []string{"success", "error"} {
+		d.nomadLogins.WithLabelValues(r)
+	}
 
 	return d
 }
@@ -489,13 +506,19 @@ func NewDiffer(cfg *config.Config) (*Differ, error) {
 // in a single process (e.g. tests exercising token resolution, or embedding)
 // without a duplicate-registration panic.
 func NewDifferWithRegistry(cfg *config.Config, reg prometheus.Registerer) (*Differ, error) {
-	token, watchPath, err := resolveNomadToken(cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	nomadCfg := nomadapi.DefaultConfig()
 	nomadCfg.Address = cfg.NomadAddr
+
+	loginMode := cfg.NomadLoginAuthMethod != ""
+
+	var token, watchPath string
+	if !loginMode {
+		var err error
+		token, watchPath, err = resolveNomadToken(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Set the token explicitly (possibly to "") so it always reflects our
 	// resolution and overrides whatever DefaultConfig read from NOMAD_TOKEN.
 	nomadCfg.SecretID = token
@@ -505,30 +528,119 @@ func NewDifferWithRegistry(cfg *config.Config, reg prometheus.Registerer) (*Diff
 		return nil, fmt.Errorf("creating nomad client: %w", err)
 	}
 
-	switch {
-	case watchPath != "":
-		slog.Info("Authenticating to Nomad with a token file (workload identity)",
-			"token_file", watchPath, "refresh_interval", cfg.NomadTokenPollInterval)
-	case token != "":
-		slog.Info("Authenticating to Nomad with a static token")
-	default:
-		slog.Info("No Nomad token configured; using anonymous access (works only when ACLs are disabled)")
-	}
-
 	d := newDifferBase(client.Jobs(), cfg, reg)
 	d.nomadClient = client
-	d.tokenFilePath = watchPath
 	d.tokenPollInterval = cfg.NomadTokenPollInterval
+
+	if loginMode {
+		d.loginAuthMethod = cfg.NomadLoginAuthMethod
+		d.loginJWTFile = loginJWTPath(cfg)
+		if d.loginJWTFile == "" {
+			return nil, fmt.Errorf("--nomad-login-auth-method is set but no JWT file is available: set --nomad-login-jwt-file or run where NOMAD_SECRETS_DIR is set")
+		}
+		slog.Info("Authenticating to Nomad with workload-identity login (JWT exchange)",
+			"auth_method", d.loginAuthMethod, "jwt_file", d.loginJWTFile)
+		// Exchange once at startup so the first diff check has a token. A failure
+		// here is not fatal — the refresher retries — but is logged clearly.
+		secretID, expiry, lerr := d.login()
+		if lerr != nil {
+			d.loginFailed = true
+			d.nomadLogins.WithLabelValues("error").Inc()
+			slog.Error("Initial Nomad workload-identity login failed; will retry. Check the auth method name, that the JWT's audience matches the method, and that a binding rule maps this job to a policy",
+				"auth_method", d.loginAuthMethod, "jwt_file", d.loginJWTFile, "err", lerr)
+		} else {
+			client.SetSecretID(secretID)
+			d.loginExpiry = expiry
+			d.nomadLogins.WithLabelValues("success").Inc()
+			slog.Info("Obtained a Nomad ACL token via workload-identity login", "expires", fmtExpiry(expiry))
+		}
+		return d, nil
+	}
+
+	d.tokenFilePath = watchPath
 	d.initialToken = token
+	switch {
+	case watchPath != "":
+		if looksLikeJWT(token) {
+			slog.Warn("The token file looks like a workload-identity JWT, not an ACL SecretID; a raw WI JWT is rejected by Nomad's Job.Plan RPC. Use --nomad-login-auth-method to exchange it (see docs/setup/nomad-access.md)",
+				"token_file", watchPath)
+		}
+		slog.Info("Authenticating to Nomad with a token file", "token_file", watchPath, "refresh_interval", cfg.NomadTokenPollInterval)
+	case token != "":
+		if looksLikeJWT(token) {
+			slog.Warn("The static Nomad token looks like a workload-identity JWT, not an ACL SecretID; use --nomad-login-auth-method to exchange it (see docs/setup/nomad-access.md)")
+		}
+		slog.Info("Authenticating to Nomad with a static token")
+	default:
+		// Anonymous. If a workload-identity token file is sitting there unused,
+		// the operator almost certainly meant to authenticate — point them at
+		// login exchange rather than letting every plan fail silently.
+		if p := defaultWorkloadTokenPath(); p != "" {
+			slog.Warn("A workload-identity token file is present but no Nomad authentication is configured. Raw WI tokens are rejected by Nomad's Job.Plan RPC (issue #74); set --nomad-login-auth-method to exchange the identity JWT for an ACL token (see docs/setup/nomad-access.md)",
+				"token_file", p)
+		} else {
+			slog.Info("No Nomad token configured; using anonymous access (works only when ACLs are disabled)")
+		}
+	}
 	return d, nil
 }
 
-// RunTokenRefresher keeps the Nomad token current when it is sourced from a file
-// (workload identity), re-reading it every --nomad-token-poll-interval and
-// applying a rotated token to the client. It is a no-op for a static token or
-// no token, and blocks until ctx is cancelled.
+// login exchanges the workload-identity JWT for a real ACL token via
+// /v1/acl/login, returning the SecretID and its expiry.
+func (d *Differ) login() (secretID string, expiry *time.Time, err error) {
+	jwt, err := readTokenFile(d.loginJWTFile)
+	if err != nil {
+		return "", nil, err
+	}
+	if jwt == "" {
+		return "", nil, fmt.Errorf("workload-identity JWT file %q is empty", d.loginJWTFile)
+	}
+	tok, _, err := d.nomadClient.ACLAuth().Login(&nomadapi.ACLLoginRequest{
+		AuthMethodName: d.loginAuthMethod,
+		LoginToken:     jwt,
+	}, &nomadapi.WriteOptions{Namespace: d.namespace})
+	if err != nil {
+		return "", nil, err
+	}
+	return tok.SecretID, tok.ExpirationTime, nil
+}
+
+// fmtExpiry renders a token expiry for logging.
+func fmtExpiry(t *time.Time) string {
+	if t == nil {
+		return "never"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// RunTokenRefresher keeps the Nomad token current: in login mode it re-exchanges
+// the workload-identity JWT before the ACL token expires; in file mode it
+// re-reads the token file. It is a no-op for a static token or no token, and
+// blocks until ctx is cancelled.
 func (d *Differ) RunTokenRefresher(ctx context.Context) {
-	if d.tokenFilePath == "" || d.nomadClient == nil {
+	if d.nomadClient == nil {
+		return
+	}
+	if d.loginAuthMethod != "" {
+		firstDelay := nextLoginDelay(d.loginExpiry)
+		if d.loginFailed {
+			firstDelay = loginRetryBackoff
+		}
+		runLoginRefresher(ctx, firstDelay,
+			d.login,
+			func(secretID string) {
+				d.nomadClient.SetSecretID(secretID)
+				d.nomadLogins.WithLabelValues("success").Inc()
+				slog.Info("Re-exchanged the Nomad workload-identity token via login")
+			},
+			func(err error) {
+				d.nomadLogins.WithLabelValues("error").Inc()
+				slog.Warn("Nomad workload-identity login failed; keeping the previous token and retrying", "auth_method", d.loginAuthMethod, "err", err)
+			},
+		)
+		return
+	}
+	if d.tokenFilePath == "" {
 		return
 	}
 	interval := d.tokenPollInterval

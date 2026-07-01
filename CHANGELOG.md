@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.9.1 — 2026-07-01
+
+### Fixed
+
+- **Workload identity now works (issue #74).** v0.9.0 read the task's
+  workload-identity token file and used it directly as the Nomad token. That
+  does not work: a raw WI JWT authenticates read RPCs but is **rejected by
+  Nomad's `Job.Plan` RPC** (`500 … UUID must be 36 characters`), and
+  nomad-botherer runs a plan on every drift check — so the documented workload
+  identity path was effectively unusable on affected Nomad versions (e.g.
+  1.11.3).
+
+  The fix is a **token exchange**: set `--nomad-login-auth-method` /
+  `NOMAD_LOGIN_AUTH_METHOD` (the JWT auth method name) and nomad-botherer
+  exchanges the identity JWT for a real ACL token via `POST /v1/acl/login`,
+  then re-exchanges it before it expires (the exchanged token is short-lived,
+  bounded by the auth method's `max_token_ttl`). `--nomad-login-jwt-file` /
+  `NOMAD_LOGIN_JWT_FILE` selects the JWT (default `${NOMAD_SECRETS_DIR}/nomad_token`;
+  point it at a named identity's file when the auth method audience does not
+  match the default identity). New counter
+  `nomad_botherer_nomad_logins_total{result}`.
+
+  **Cluster prerequisites** (one-time): a JWT auth method trusting Nomad's JWKS,
+  a task `identity` block whose `aud` matches it, and a binding rule mapping the
+  job to a policy. Full setup in `docs/setup/nomad-access.md`.
+
+- **Removed the broken auto-detection** of `${NOMAD_SECRETS_DIR}/nomad_token` as
+  a token — it only ever produced the failure above. `--nomad-token-file` now
+  documents that it must be a real ACL SecretID (not a JWT), and nomad-botherer
+  warns if a configured token looks like a JWT and logs an actionable hint when
+  a workload-identity file is present but login is not configured.
+
 ## v0.9.0 — 2026-06-29
 
 Verified against Nomad 1.9.6, 1.10.5, 1.11.3, and 2.0.2 (full regression
