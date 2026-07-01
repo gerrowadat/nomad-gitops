@@ -33,9 +33,9 @@ import (
 const wiTokenFilename = "nomad_token"
 
 const (
-	// minLoginRefresh floors the re-login delay so a very short token TTL cannot
-	// spin the login loop.
-	minLoginRefresh = 30 * time.Second
+	// loginSafetyMargin is how far before expiry a re-login must complete, so the
+	// token is always refreshed before it expires even for a short TTL.
+	loginSafetyMargin = 5 * time.Second
 	// loginRetryBackoff is the delay before retrying after a failed login.
 	loginRetryBackoff = 15 * time.Second
 	// defaultLoginRefresh is used when an exchanged token carries no expiry
@@ -143,16 +143,22 @@ func refreshTokenFile(ctx context.Context, watchPath string, interval time.Durat
 }
 
 // nextLoginDelay returns how long until the next re-login: half the remaining
-// lifetime, so the token is always refreshed well before it expires. Floored by
-// minLoginRefresh; falls back to defaultLoginRefresh when the token has no
-// expiry.
+// lifetime (so a fresh token is obtained well before this one expires), but
+// never later than loginSafetyMargin before expiry — even for a short TTL the
+// refresh completes before the token is invalid. A non-positive result means
+// re-login now (the token is at or past expiry). Falls back to
+// defaultLoginRefresh when the token has no expiry.
 func nextLoginDelay(expiry *time.Time) time.Duration {
 	if expiry == nil {
 		return defaultLoginRefresh
 	}
-	d := time.Until(*expiry) / 2
-	if d < minLoginRefresh {
-		d = minLoginRefresh
+	remaining := time.Until(*expiry)
+	d := remaining / 2
+	if latest := remaining - loginSafetyMargin; d > latest {
+		d = latest
+	}
+	if d < 0 {
+		d = 0
 	}
 	return d
 }

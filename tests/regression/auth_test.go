@@ -175,6 +175,24 @@ func differSeesJob(t *testing.T, d *nomad.Differ, jobID, commit string) bool {
 	return false
 }
 
+// differSeesModified runs one diff check with hcl for jobID (which must differ
+// from the live job) and reports whether a `modified` diff was detected.
+// Reaching that requires a successful Jobs.Plan — the RPC that rejects raw
+// workload-identity JWTs (issue #74) — so it verifies the token works for plan.
+func differSeesModified(t *testing.T, d *nomad.Differ, jobID, hcl, commit string) bool {
+	t.Helper()
+	if err := d.Check(map[string]string{jobID + ".hcl": hcl}, commit); err != nil {
+		t.Fatalf("differ.Check: %v", err)
+	}
+	diffs, _, _ := d.Diffs()
+	for _, df := range diffs {
+		if df.JobID == jobID && df.DiffType == nomad.DiffTypeModified {
+			return true
+		}
+	}
+	return false
+}
+
 // TestAuth_WithACLs starts one ACL-enabled Nomad and runs every auth scenario
 // against it as a subtest, so the cluster (the slow part) is started once.
 func TestAuth_WithACLs(t *testing.T) {
@@ -260,10 +278,11 @@ func TestAuth_WithACLs(t *testing.T) {
 		}
 		pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 
-		// Policy the login should grant (read is enough to see the job).
+		// Policy the login should grant. submit-job is required for Job.Plan —
+		// the RPC that rejects raw WI JWTs (issue #74), which this test exercises.
 		if _, err := mgmt.ACLPolicies().Upsert(&nomadapi.ACLPolicy{
 			Name:  policyName,
-			Rules: `namespace "default" { capabilities = ["list-jobs", "read-job"] }`,
+			Rules: `namespace "default" { capabilities = ["list-jobs", "read-job", "submit-job"] }`,
 		}, nil); err != nil {
 			t.Fatalf("upsert policy: %v", err)
 		}
@@ -319,8 +338,12 @@ func TestAuth_WithACLs(t *testing.T) {
 		if got := gatherCounter(t, reg, "nomad_botherer_nomad_logins_total"); got == 0 {
 			t.Fatal("expected a successful /v1/acl/login exchange at startup")
 		}
-		if !differSeesJob(t, d, jobID, "wi-login") {
-			t.Error("a differ authenticating via login exchange should detect the managed job")
+		// Exercise Job.Plan specifically — the RPC that rejected raw WI JWTs and
+		// caused issue #74. The live job (args 600) differs from this HCL (args
+		// 999), so detecting a `modified` diff requires a successful plan with
+		// the exchanged token.
+		if !differSeesModified(t, d, jobID, testJobHCLWithPolicy(jobID, "full"), "wi-login-plan") {
+			t.Error("login-exchange auth should let Job.Plan detect a modified diff (issue #74)")
 		}
 	})
 

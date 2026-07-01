@@ -131,16 +131,22 @@ func TestLoginJWTPath(t *testing.T) {
 }
 
 func TestNextLoginDelay(t *testing.T) {
-	// Half the remaining lifetime.
+	// Half the remaining lifetime for a comfortable TTL.
 	exp := time.Now().Add(30 * time.Minute)
 	d := nextLoginDelay(&exp)
 	if d < 14*time.Minute || d > 15*time.Minute {
 		t.Errorf("half-life delay for 30m TTL: want ~15m, got %v", d)
 	}
-	// Floored for a very short TTL.
-	short := time.Now().Add(10 * time.Second)
-	if got := nextLoginDelay(&short); got != minLoginRefresh {
-		t.Errorf("short TTL should floor to %v, got %v", minLoginRefresh, got)
+	// A short TTL must still refresh *before* expiry (never floored past it).
+	short := time.Now().Add(20 * time.Second)
+	got := nextLoginDelay(&short)
+	if got <= 0 || got >= 20*time.Second-loginSafetyMargin+time.Second {
+		t.Errorf("short TTL must schedule before expiry (< ~%v), got %v", 20*time.Second-loginSafetyMargin, got)
+	}
+	// At/after expiry: re-login now.
+	past := time.Now().Add(-time.Second)
+	if got := nextLoginDelay(&past); got != 0 {
+		t.Errorf("expired token should re-login now (0), got %v", got)
 	}
 	// No expiry falls back.
 	if got := nextLoginDelay(nil); got != defaultLoginRefresh {
