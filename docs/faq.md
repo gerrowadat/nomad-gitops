@@ -101,6 +101,19 @@ setup: [Nomad access → Workload identity](setup/nomad-access.md#workload-ident
 (Also don't use `identity { env = true }`: an env token is captured once at task
 start and never refreshed.)
 
+## Workload identity worked, then broke after ~30 minutes (`ACL token expired`)
+
+Your `identity` block is missing a `ttl`. Without one, Nomad issues a
+**non-expiring** JWT and **never rewrites the file**, so once the first exchanged
+ACL token expires (after the auth method's `max_token_ttl`), nomad-gitops
+re-logins with the stale JWT and `/v1/acl/login` rejects it — every check then
+fails with `ACL token expired`. Add `ttl` (and `change_mode = "noop"`) to the
+identity block; Nomad then renews the file before it expires. nomad-gitops logs
+a WARN at startup when the JWT has no expiry, so you don't have to wait for the
+delayed failure. See
+[Nomad access → Workload identity](setup/nomad-access.md#workload-identity-recommended-under-nomad)
+(issue #76).
+
 ## An apply is stuck as `blocked_known_failed`
 
 The flap-loop guard is holding it: this exact spec matches a recent deployment

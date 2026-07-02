@@ -2,6 +2,8 @@ package nomad
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -104,6 +106,29 @@ func defaultWorkloadTokenPath() string {
 // string, conventionally starting "ey".
 func looksLikeJWT(s string) bool {
 	return strings.HasPrefix(s, "ey") && strings.Count(s, ".") == 2
+}
+
+// jwtLacksExpiry reports whether token is a decodable JWT that carries no `exp`
+// claim. A workload-identity JWT with no expiry means the task's `identity`
+// block has no `ttl`, so Nomad issues a non-expiring token and never rewrites
+// the file — login works at first but fails once the exchanged ACL token
+// expires (issue #76). Returns false for anything it cannot positively decode
+// as a JWT, so a real SecretID or a malformed value never trips the warning.
+func jwtLacksExpiry(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return false
+	}
+	_, hasExp := claims["exp"]
+	return !hasExp
 }
 
 // readTokenFile reads and trims a token (SecretID or JWT) from a file.

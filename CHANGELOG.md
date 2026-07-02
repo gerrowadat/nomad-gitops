@@ -5,6 +5,21 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
+## v1.0.1 — 2026-07-02
+
+### Fixed
+
+- **Workload identity: warn about the missing-`ttl` footgun, and document it
+  (issue #76).** With a task `identity` block that has no `ttl`, Nomad issues a
+  non-expiring JWT and never rewrites the file, so login works for the first
+  `max_token_ttl` (e.g. 30 min) and then silently breaks — re-login uses the
+  stale JWT, `/v1/acl/login` rejects it, and every drift check fails with `ACL
+  token expired`. nomad-gitops now logs a WARN at startup when the workload
+  identity JWT it reads has no expiry claim, turning a delayed silent failure
+  into an immediate, actionable one. The `docs/setup/nomad-access.md` example
+  and `examples/nomad-gitops.hcl` now set `ttl` and `change_mode = "noop"` on
+  the identity block, with a prominent warning.
+
 ## v1.0.0 — 2026-07-01
 
 **Renamed from `nomad-botherer` to `nomad-gitops`.** This is a rename and a

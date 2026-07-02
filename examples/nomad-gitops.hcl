@@ -85,7 +85,11 @@ job "nomad-gitops" {
         name = "nomad-api"
         aud  = ["nomad.io"]
         file = true
-        ttl  = "1h" # JWT lifetime; Nomad rotates the file before it expires
+        # ttl is REQUIRED. Without it Nomad issues a non-expiring JWT and never
+        # rewrites the file, so login silently breaks ~max_token_ttl after start
+        # (issue #76). With a ttl, Nomad renews the file well before expiry.
+        ttl         = "1h"
+        change_mode = "noop" # token renewals must not restart the task
       }
 
       env {

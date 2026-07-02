@@ -69,13 +69,25 @@ not match a custom auth method**, so use a named identity:
 ```hcl
 task "nomad-gitops" {
   identity {
-    name = "nomad-api"
-    aud  = ["nomad.io"]
-    file = true          # -> ${NOMAD_SECRETS_DIR}/nomad_nomad-api.jwt
+    name        = "nomad-api"
+    aud         = ["nomad.io"]
+    file        = true       # -> ${NOMAD_SECRETS_DIR}/nomad_nomad-api.jwt
+    ttl         = "1h"       # REQUIRED — see the warning below
+    change_mode = "noop"     # token renewals must not restart the task
   }
   # ...
 }
 ```
+
+> ⚠️ **`ttl` is required, and its omission is a silent footgun.** Without a
+> `ttl`, Nomad issues a **non-expiring** identity JWT and **never rewrites the
+> file**. Login works for the first ~`max_token_ttl` (e.g. 30 min) and then
+> **silently breaks**: once the exchanged ACL token expires, nomad-gitops
+> re-logins with the now-stale JWT, `/v1/acl/login` rejects it, and every drift
+> check fails with `ACL token expired`. Setting a `ttl` makes Nomad issue an
+> expiring JWT and renew the file well before it expires. nomad-gitops logs a
+> WARN at startup if the JWT it reads has no expiry, so you don't have to wait
+> for the delayed failure. (Issue #76.)
 
 Do **not** rely on `env = true` for the API token — env is captured once and
 never refreshed.
