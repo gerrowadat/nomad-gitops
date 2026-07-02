@@ -5,7 +5,7 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
-## Unreleased
+## v1.0.1 — 2026-07-02
 
 ### Fixed
 
