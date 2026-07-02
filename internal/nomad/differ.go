@@ -206,6 +206,7 @@ type Differ struct {
 	loginJWTFile      string
 	loginExpiry       *time.Time
 	loginFailed       bool
+	loginNoTTLWarned  sync.Once
 	namespace         string
 	includeDeadJobs   bool
 	jobSelectorGlob   string
@@ -594,6 +595,16 @@ func (d *Differ) login() (secretID string, expiry *time.Time, err error) {
 	}
 	if jwt == "" {
 		return "", nil, fmt.Errorf("workload-identity JWT file %q is empty", d.loginJWTFile)
+	}
+	// A WI JWT with no expiry means the identity block has no ttl: Nomad issues a
+	// non-expiring token and never rewrites the file, so login works now but
+	// fails once the exchanged ACL token expires (issue #76). Warn once, at the
+	// first login (startup), so this silent, delayed failure is caught early.
+	if jwtLacksExpiry(jwt) {
+		d.loginNoTTLWarned.Do(func() {
+			slog.Warn("Workload-identity JWT has no expiry (exp) claim: the identity block is missing a ttl, so Nomad will not renew the token file. Login will start failing once the current exchanged token expires (after the auth method's max_token_ttl). Set ttl on the identity block, e.g. `ttl = \"1h\"` with `change_mode = \"noop\"` (see docs/setup/nomad-access.md).",
+				"jwt_file", d.loginJWTFile)
+		})
 	}
 	tok, _, err := d.nomadClient.ACLAuth().Login(&nomadapi.ACLLoginRequest{
 		AuthMethodName: d.loginAuthMethod,

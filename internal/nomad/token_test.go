@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,34 @@ import (
 
 	"github.com/gerrowadat/nomad-gitops/internal/config"
 )
+
+// fakeJWT builds a header.payload.sig string with the given JSON claims payload.
+// jwtLacksExpiry only decodes the payload, so the signature is irrelevant.
+func fakeJWT(claimsJSON string) string {
+	b64 := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	return b64(`{"alg":"none","typ":"JWT"}`) + "." + b64(claimsJSON) + ".sig"
+}
+
+func TestJWTLacksExpiry(t *testing.T) {
+	if jwtLacksExpiry(fakeJWT(`{"sub":"x","exp":1893456000}`)) {
+		t.Error("a JWT with an exp claim must not be flagged")
+	}
+	if !jwtLacksExpiry(fakeJWT(`{"sub":"x","aud":["nomad.io"]}`)) {
+		t.Error("a JWT with no exp claim should be flagged (the ttl footgun)")
+	}
+	// Anything not positively a JWT must not trip the warning.
+	for _, s := range []string{
+		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", // SecretID UUID
+		"",
+		"only.two",          // not 3 segments
+		"a.b.c",             // middle not base64/JSON
+		fakeJWT(`not-json`), // payload not JSON
+	} {
+		if jwtLacksExpiry(s) {
+			t.Errorf("non-JWT / undecodable value must not be flagged: %q", s)
+		}
+	}
+}
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
