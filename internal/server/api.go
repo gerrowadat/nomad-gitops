@@ -1,7 +1,6 @@
 package server
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -60,11 +59,11 @@ type errorResponse struct {
 // returns immediately on unequal lengths, which would otherwise leak the key
 // length through response timing.
 func requireAPIKey(apiKey string) func(http.Handler) http.Handler {
-	expected := sha256.Sum256([]byte("Bearer " + apiKey))
+	expected := "Bearer " + apiKey
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got := sha256.Sum256([]byte(r.Header.Get("Authorization")))
-			if apiKey == "" || subtle.ConstantTimeCompare(got[:], expected[:]) != 1 {
+			got := r.Header.Get("Authorization")
+			if apiKey == "" || len(got) != len(expected) || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 				return
 			}
