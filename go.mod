@@ -1,6 +1,6 @@
 module github.com/gerrowadat/nomad-gitops
 
-go 1.25.11
+go 1.25.12
 
 require (
 	github.com/go-git/go-billy/v5 v5.9.0
