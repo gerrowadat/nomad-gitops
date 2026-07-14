@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"log/slog"
 	"strings"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -64,7 +65,7 @@ func classifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix st
 
 	var c changeCounts
 	c.addFields(d.Fields, nil, false, false, metaPrefix)
-	c.addObjects(d.Objects, metaPrefix)
+	c.addObjects(d.Objects, metaPrefix, 1)
 
 	for _, tg := range d.TaskGroups {
 		if tg == nil {
@@ -89,7 +90,7 @@ func classifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix st
 			if isAuto && o.Name == "Scaling" {
 				continue
 			}
-			c.addObject(o, metaPrefix)
+			c.addObject(o, metaPrefix, 1)
 		}
 
 		for _, task := range tg.Tasks {
@@ -104,7 +105,7 @@ func classifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix st
 				if o == nil {
 					continue
 				}
-				c.addObject(o, metaPrefix)
+				c.addObject(o, metaPrefix, 1)
 			}
 		}
 	}
@@ -125,17 +126,28 @@ func classifyDiff(d *nomadapi.JobDiff, autoscaled map[string]bool, metaPrefix st
 // objects: "Config" (whose "image" field is a Docker image reference) and
 // "Meta" (whose fields are meta keys, so managed-prefix ones are tracked
 // separately). Image/meta semantics do not propagate into nested sub-objects.
-func (c *changeCounts) addObject(o *nomadapi.ObjectDiff, metaPrefix string) {
+// depth is the object's nesting level (1 at the top); beyond
+// MaxPlanDiffObjectDepth, recursion stops and the unexamined subtree counts as
+// a non-image, non-meta change — the conservative reading, since an
+// update-policy of image-only or none must not wave through a change nobody
+// actually looked at.
+func (c *changeCounts) addObject(o *nomadapi.ObjectDiff, metaPrefix string, depth int) {
+	if depth > MaxPlanDiffObjectDepth {
+		slog.Warn("Plan diff exceeds maximum nesting depth; treating unexamined nesting as a non-trivial change",
+			"depth", depth, "max_depth", MaxPlanDiffObjectDepth)
+		c.other++
+		return
+	}
 	c.addFields(o.Fields, nil, o.Name == "Meta", o.Name == "Config", metaPrefix)
-	c.addObjects(o.Objects, metaPrefix)
+	c.addObjects(o.Objects, metaPrefix, depth+1)
 }
 
-func (c *changeCounts) addObjects(objs []*nomadapi.ObjectDiff, metaPrefix string) {
+func (c *changeCounts) addObjects(objs []*nomadapi.ObjectDiff, metaPrefix string, depth int) {
 	for _, o := range objs {
 		if o == nil {
 			continue
 		}
-		c.addObject(o, metaPrefix)
+		c.addObject(o, metaPrefix, depth)
 	}
 }
 

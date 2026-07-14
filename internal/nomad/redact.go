@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"log/slog"
 	"strings"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -49,32 +50,42 @@ func RedactJobDiff(d *nomadapi.JobDiff) int {
 		return 0
 	}
 	n := redactFields(d.Fields)
-	n += redactObjects(d.Objects)
+	n += redactObjects(d.Objects, 1)
 	for _, tg := range d.TaskGroups {
 		if tg == nil {
 			continue
 		}
 		n += redactFields(tg.Fields)
-		n += redactObjects(tg.Objects)
+		n += redactObjects(tg.Objects, 1)
 		for _, t := range tg.Tasks {
 			if t == nil {
 				continue
 			}
 			n += redactFields(t.Fields)
-			n += redactObjects(t.Objects)
+			n += redactObjects(t.Objects, 1)
 		}
 	}
 	return n
 }
 
-func redactObjects(objs []*nomadapi.ObjectDiff) int {
+// redactObjects walks a diff's Objects tree redacting sensitive field values.
+// depth is the nesting level (1 at the top); beyond MaxPlanDiffObjectDepth,
+// recursion stops rather than continuing without bound — see
+// diffdepth.go. A diff pathological enough to hit this cap is not a shape any
+// legitimate job spec produces.
+func redactObjects(objs []*nomadapi.ObjectDiff, depth int) int {
+	if depth > MaxPlanDiffObjectDepth {
+		slog.Warn("Plan diff exceeds maximum nesting depth; stopped redacting beyond this point",
+			"depth", depth, "max_depth", MaxPlanDiffObjectDepth)
+		return 0
+	}
 	n := 0
 	for _, o := range objs {
 		if o == nil {
 			continue
 		}
 		n += redactFields(o.Fields)
-		n += redactObjects(o.Objects)
+		n += redactObjects(o.Objects, depth+1)
 	}
 	return n
 }

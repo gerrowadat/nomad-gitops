@@ -318,3 +318,33 @@ func TestDiffs_NoApplyActionWhenEmpty(t *testing.T) {
 		t.Errorf("no reason arrow expected when ApplyAction is empty, got:\n%s", body)
 	}
 }
+
+// TestDiffs_DeepNesting_DoesNotHangOrPanic verifies that rendering a plan
+// diff nested far deeper than any real Nomad job spec produces (e.g. a
+// deliberately crafted HCL file) terminates instead of recursing without
+// bound, mirroring the depth cap classification and redaction apply to the
+// same tree (internal/nomad/diffdepth.go).
+func TestDiffs_DeepNesting_DoesNotHangOrPanic(t *testing.T) {
+	cur := &nomadapi.ObjectDiff{Type: "Edited", Name: "leaf"}
+	for i := 1; i < nomad.MaxPlanDiffObjectDepth+50; i++ {
+		cur = &nomadapi.ObjectDiff{Type: "Edited", Name: "nested", Objects: []*nomadapi.ObjectDiff{cur}}
+	}
+	diffs := []nomad.JobDiff{
+		{
+			JobID:    "myapp",
+			DiffType: nomad.DiffTypeModified,
+			PlanDiff: &nomadapi.JobDiff{Type: "Edited", ID: "myapp", Objects: []*nomadapi.ObjectDiff{cur}},
+		},
+	}
+
+	done := make(chan string, 1)
+	go func() { done <- diffsResponse(t, diffs, time.Now()) }()
+	select {
+	case body := <-done:
+		if !strings.Contains(body, "exceeds maximum nesting depth") {
+			t.Errorf("expected a truncation notice in the rendered output, got:\n%s", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("/diffs did not return; recursion depth cap did not stop it")
+	}
+}
