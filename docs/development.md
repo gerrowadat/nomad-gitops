@@ -33,6 +33,42 @@ make clean        # remove build artefacts
 `make lint` fails if any file is not gofmt-clean, then runs `go vet`. CI runs the
 same `make lint` on every push and PR, so keep the tree formatted (`make fmt`).
 
+## Security scanning
+
+Three GitHub Actions workflows watch the repo and its dependencies on a
+schedule, independent of the regular test suite:
+
+- **[Dependabot](../.github/dependabot.yml)** — weekly version-bump PRs for Go
+  modules, GitHub Actions, and the Dockerfile's base images. If a bump fixes a
+  known vulnerability, Dependabot says so in the PR description.
+- **[Security scan](../.github/workflows/security-scan.yml)** (weekly, plus
+  every push to `main`) — `govulncheck` (the Go team's own scanner; flags a
+  vulnerable dependency only if nomad-gitops's code actually reaches the
+  vulnerable path) against the module, and
+  [Trivy](https://github.com/aquasecurity/trivy) against both `go.mod`/`go.sum`
+  and the built container image (catches OS-package CVEs in the `alpine` base
+  image that govulncheck, being Go-specific, cannot see). The image scan fails
+  the run on a known-fixable CRITICAL/HIGH CVE; the filesystem scan and
+  govulncheck report only, since a reachable-but-unfixed advisory shouldn't
+  block every push.
+- **[CodeQL](../.github/workflows/codeql.yml)** (weekly, plus every push and
+  PR to `main`) — GitHub's static analysis for source-level issues (injection,
+  unsafe deserialization, weak crypto) rather than known-CVE dependency
+  matching.
+
+All three upload SARIF results to the repository's **Security → Code scanning
+alerts** tab, so findings surface there rather than requiring anyone to read
+workflow logs. Dependabot's own vulnerability alerts (Settings → Code security)
+should also be enabled on the repo — that's what turns a known-CVE dependency
+into an automatic remediation PR rather than just a Security-tab alert.
+
+Run `govulncheck ./...` locally the same way CI does:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
+```
+
 ## Simulating a webhook
 
 `scripts/send-webhook.sh` constructs a minimal GitHub push event payload and

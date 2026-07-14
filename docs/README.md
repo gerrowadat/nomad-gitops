@@ -40,8 +40,8 @@ your deployment.
 
 ## Contributing
 
-- [Development](development.md) — build, test, the regression suite, and the
-  release process.
+- [Development](development.md) — build, test, the regression suite, security
+  scanning, and the release process.
 - [Nomad version compatibility](nomad-versions.md) — which Nomad versions each
   release is verified against.
 
