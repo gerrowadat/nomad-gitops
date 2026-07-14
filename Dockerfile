@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     ./cmd/nomad-gitops
 
 # ── runtime image ──────────────────────────────────────────────────────────────
-FROM alpine:3.21
+FROM alpine:3.24
 
 LABEL org.opencontainers.image.title="nomad-gitops" \
       org.opencontainers.image.source="https://github.com/gerrowadat/nomad-gitops" \
