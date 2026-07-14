@@ -1,13 +1,29 @@
 package nomad_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
 	"github.com/gerrowadat/nomad-gitops/internal/nomad"
 )
+
+// deepObjectDiffChain builds a chain of nested ObjectDiffs depth levels deep,
+// returning the outermost node.
+func deepObjectDiffChain(depth int) *nomadapi.ObjectDiff {
+	cur := &nomadapi.ObjectDiff{Type: "Edited", Name: "leaf"}
+	for i := 1; i < depth; i++ {
+		cur = &nomadapi.ObjectDiff{
+			Type:    "Edited",
+			Name:    fmt.Sprintf("nested%d", i),
+			Objects: []*nomadapi.ObjectDiff{cur},
+		}
+	}
+	return cur
+}
 
 func TestRedactJobDiff_EnvValues(t *testing.T) {
 	d := &nomadapi.JobDiff{
@@ -171,5 +187,40 @@ func TestRedactJobDiff_NilEntriesSkipped(t *testing.T) {
 	}
 	if d.Fields[1].New != nomad.RedactedValue {
 		t.Errorf("non-nil env field should still be redacted: %q", d.Fields[1].New)
+	}
+}
+
+// TestRedactJobDiff_DepthCapPreventsUnboundedRecursion verifies that a plan
+// diff nested far deeper than any real Nomad job spec produces (e.g. a
+// deliberately crafted HCL file) does not recurse without bound. A shallow
+// sensitive field alongside the deep chain still gets redacted normally.
+func TestRedactJobDiff_DepthCapPreventsUnboundedRecursion(t *testing.T) {
+	deep := deepObjectDiffChain(nomad.MaxPlanDiffObjectDepth + 50)
+	d := &nomadapi.JobDiff{
+		Type: "Edited",
+		Objects: []*nomadapi.ObjectDiff{
+			deep,
+			{
+				Type:   "Edited",
+				Name:   "Config",
+				Fields: []*nomadapi.FieldDiff{{Type: "Edited", Name: "registry_password", Old: "a", New: "b"}},
+			},
+		},
+	}
+
+	done := make(chan int, 1)
+	go func() { done <- nomad.RedactJobDiff(d) }()
+	select {
+	case n := <-done:
+		if n != 1 {
+			t.Errorf("want 1 redaction (the shallow sensitive field), got %d", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RedactJobDiff did not return; recursion depth cap did not stop it")
+	}
+
+	cfgField := d.Objects[1].Fields[0]
+	if cfgField.New != nomad.RedactedValue {
+		t.Errorf("shallow sensitive field alongside a deep chain should still be redacted: %q", cfgField.New)
 	}
 }

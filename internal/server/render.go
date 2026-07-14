@@ -121,10 +121,22 @@ func renderFields(b *strings.Builder, fields []*nomadapi.FieldDiff, indent strin
 }
 
 func renderObjects(b *strings.Builder, objects []*nomadapi.ObjectDiff, indent string) {
+	renderObjectsDepth(b, objects, indent, 1)
+}
+
+// renderObjectsDepth is renderObjects with an explicit nesting level. depth is
+// 1 at the top; beyond nomad.MaxPlanDiffObjectDepth, rendering stops rather
+// than recursing without bound, mirroring the cap classification and
+// redaction apply to the same plan-diff tree (internal/nomad/diffdepth.go).
+func renderObjectsDepth(b *strings.Builder, objects []*nomadapi.ObjectDiff, indent string, depth int) {
+	if depth > nomad.MaxPlanDiffObjectDepth {
+		fmt.Fprintf(b, "%s... (diff truncated: exceeds maximum nesting depth)\n", indent)
+		return
+	}
 	for _, o := range objects {
 		fmt.Fprintf(b, "%s%s %s {\n", indent, diffSymbol(o.Type), o.Name)
 		renderFields(b, o.Fields, indent+"  ")
-		renderObjects(b, o.Objects, indent+"  ")
+		renderObjectsDepth(b, o.Objects, indent+"  ", depth+1)
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
 }

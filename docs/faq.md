@@ -152,3 +152,13 @@ secret-like names are redacted before the diff is stored, so they never reach
 
 An instance watches one `--nomad-namespace`. Run one per namespace (and, with
 workload identity, grant the ACL policy on each namespace you target).
+
+## A diff is truncated with "exceeds maximum nesting depth"
+
+nomad-gitops caps how deep it will walk into a Nomad plan diff's nested
+objects (classification, redaction, and `/diffs` rendering all share the same
+cap). No real job spec nests anywhere near this deep — it exists to stop a
+pathologically nested job spec (however it got there) from recursing without
+bound. A diff hitting the cap is conservatively classified as a non-image,
+non-meta change, so it still requires the `full` update policy to apply
+rather than being waved through as trivial.

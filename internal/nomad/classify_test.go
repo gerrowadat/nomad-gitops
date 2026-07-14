@@ -2,6 +2,7 @@ package nomad_test
 
 import (
 	"testing"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
@@ -268,6 +269,32 @@ func TestClassifyDiff(t *testing.T) {
 				t.Errorf("classifyDiff = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassifyDiff_DepthCapPreventsUnboundedRecursion verifies that a plan
+// diff nested far deeper than any real Nomad job spec produces does not
+// recurse without bound, and is conservatively classified as DiffClassOther
+// (never image-only or none) so an update policy short of "full" cannot wave
+// it through unexamined.
+func TestClassifyDiff_DepthCapPreventsUnboundedRecursion(t *testing.T) {
+	var deep *nomadapi.ObjectDiff
+	cur := &nomadapi.ObjectDiff{Type: "Edited", Name: "leaf"}
+	for i := 1; i < nomad.MaxPlanDiffObjectDepth+50; i++ {
+		cur = &nomadapi.ObjectDiff{Type: "Edited", Name: "nested", Objects: []*nomadapi.ObjectDiff{cur}}
+	}
+	deep = cur
+	diff := &nomadapi.JobDiff{Type: "Edited", ID: "myapp", Objects: []*nomadapi.ObjectDiff{deep}}
+
+	done := make(chan nomad.DiffClass, 1)
+	go func() { done <- nomad.ClassifyDiff(diff, nil, "gitops") }()
+	select {
+	case got := <-done:
+		if got != nomad.DiffClassOther {
+			t.Errorf("classifyDiff of an over-deep diff = %v, want %v", got, nomad.DiffClassOther)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("classifyDiff did not return; recursion depth cap did not stop it")
 	}
 }
 
