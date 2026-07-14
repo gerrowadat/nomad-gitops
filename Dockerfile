@@ -2,7 +2,7 @@
 # Multi-platform build: linux/amd64 and linux/arm64 (Raspberry Pi 4+).
 # Build via the Makefile: make docker (local) or make docker-push (push to registry).
 
-FROM --platform=${BUILDPLATFORM} golang:1.25.11-alpine AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.26.5-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
