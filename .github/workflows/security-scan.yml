@@ -1,0 +1,107 @@
+name: Security scan
+
+# Periodic vulnerability scanning, independent of Dependabot's version-bump
+# PRs (.github/dependabot.yml): this looks for known CVEs in the *current*
+# tree on a schedule, rather than only when a dependency changes.
+#
+#   - govulncheck: the Go team's own scanner. Call-graph aware — it flags a
+#     vulnerable dependency only if nomad-gitops actually reaches the
+#     vulnerable code path, so it does not fail on CVEs in unreachable code
+#     the way a naive version-match scanner would.
+#   - Trivy: scans the Go module list and the built container image (base OS
+#     packages plus Go deps) against multiple CVE databases. Covers what
+#     govulncheck does not: OS-level vulnerabilities in the alpine base image.
+#
+# Both upload SARIF to GitHub code scanning so results show up as repository
+# Security alerts rather than requiring anyone to read workflow logs.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # weekly, Monday 06:17 UTC
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck -format sarif ./... > govulncheck.sarif
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
+
+  trivy-fs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Trivy filesystem scan (go.mod / go.sum)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+          exit-code: "0" # report, don't fail the run; see the docker-image job for the gate
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+  trivy-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image for scanning
+        run: docker build -t nomad-gitops:scan .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: nomad-gitops:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+          exit-code: "1" # the published image is the actual release artifact: fail on known-fixable CVEs
+          ignore-unfixed: true
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
