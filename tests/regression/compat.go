@@ -18,7 +18,7 @@
 //
 // Environment variables:
 //
-//	NOMAD_VERSION   Nomad version to pull from Docker Hub (default: 1.9.3)
+//	NOMAD_VERSION   Nomad version to pull from Docker Hub (default: 1.9.7)
 //	NOMAD_ADDR      Use an existing cluster; skips Docker startup entirely
 //	NOMAD_TOKEN     ACL token for the cluster (if needed)
 package regression
@@ -26,7 +26,7 @@ package regression
 import "time"
 
 // defaultNomadVersion is used when NOMAD_VERSION is unset and Docker is available.
-const defaultNomadVersion = "1.9.6"
+const defaultNomadVersion = "1.9.7"
 
 // VersionRecord documents the result of running the regression suite against
 // a specific Nomad version. Records are added manually after each release.
@@ -50,6 +50,30 @@ type VersionRecord struct {
 //  2. Add a VersionRecord entry below.
 //  3. Update docs/nomad-versions.md.
 var TestedVersions = []VersionRecord{
+	{
+		NomadVersion:  "2.0.4",
+		GitopsRelease: "v1.0.2",
+		TestedAt:      time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.11.3",
+		GitopsRelease: "v1.0.2",
+		TestedAt:      time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.10.5",
+		GitopsRelease: "v1.0.2",
+		TestedAt:      time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.9.7",
+		GitopsRelease: "v1.0.2",
+		TestedAt:      time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
 	{
 		NomadVersion:  "2.0.2",
 		GitopsRelease: "v1.0.0",

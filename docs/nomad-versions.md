@@ -22,6 +22,7 @@ After a successful run, add a row to the table below and update `tests/regressio
 
 | nomad-gitops | Nomad 1.9.x | Nomad 1.10.x | Nomad 1.11.x | Nomad 2.0.x | Notes |
 |----------------|:-----------:|:------------:|:------------:|:-----------:|-------|
+| v1.0.2         | ✅ 1.9.7    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.4    | Security/dependency patch; plan-diff depth cap (no behaviour change for well-formed jobs) |
 | v1.0.0         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    | Renamed from nomad-botherer; metrics `nomad_botherer_*` → `nomad_gitops_*` (no behaviour change) |
 | v0.9.1         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    | Workload identity fixed via `/v1/acl/login` token exchange (#74) |
 | v0.9.0         | ✅ 1.9.6    | ✅ 1.10.5    | ✅ 1.11.3    | ✅ 2.0.2    | Nomad workload-identity auth; policy-widening defers pre-existing drift (#69) |

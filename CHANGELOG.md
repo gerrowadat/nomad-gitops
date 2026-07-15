@@ -5,6 +5,44 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
+## v1.0.2 — 2026-07-15
+
+A security and dependency patch. No new features and no config, meta-key, or
+metric changes. Verified against Nomad 1.9.7, 1.10.5, 1.11.3, and 2.0.4 (full
+regression suite). The default Nomad version for a Docker-started regression
+run is now 1.9.7 (was 1.9.6).
+
+### Security
+
+- **Cap plan-diff nesting depth to prevent unbounded recursion.**
+  `classifyDiff`, `RedactJobDiff`, and the `/diffs` text renderer all walked a
+  Nomad plan diff's `Objects` tree with no depth limit. That tree's shape
+  follows the HCL job spec in the watched branch, so a deliberately crafted job
+  with deep object nesting could drive them into effectively unbounded
+  recursion — a stack-overflow crash that takes down the whole process, not a
+  recoverable panic. A shared `MaxPlanDiffObjectDepth` (200) now caps traversal:
+  classification treats an over-deep diff conservatively (non-image, non-meta,
+  so nothing short of a `full` policy could apply it), and redaction and
+  rendering stop descending and log a warning. See the new
+  [FAQ](docs/faq.md) entry, "A diff is truncated with 'exceeds maximum nesting
+  depth'".
+- **JSON API bearer-token check no longer hashes the key before comparing.**
+  The API auth middleware compared SHA-256 digests of the expected and
+  presented tokens; it now compares the raw `Bearer <key>` bytes in constant
+  time behind a length gate (`subtle.ConstantTimeCompare`), computed once per
+  middleware instance. Same timing guarantee, without hashing sensitive data
+  (code scanning alert #17).
+- **Periodic security scanning.** A weekly `security-scan` workflow runs
+  govulncheck, gosec, and Trivy and uploads SARIF to the repository's Security
+  tab (see [docs/development.md](docs/development.md)); added `SECURITY.md`.
+
+### Dependencies
+
+- Bump the `go` directive to 1.25.12 (picks up the `crypto/tls` ECH fix).
+- Bump `golang.org/x/net` to v0.55.0.
+- Bump the builder base image to `golang:1.26.5-alpine` and the runtime base
+  image to `alpine:3.24`.
+
 ## v1.0.1 — 2026-07-02
 
 ### Fixed
