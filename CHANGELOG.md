@@ -9,7 +9,8 @@
 
 A security and dependency patch. No new features and no config, meta-key, or
 metric changes. Verified against Nomad 1.9.7, 1.10.5, 1.11.3, and 2.0.4 (full
-regression suite).
+regression suite). The default Nomad version for a Docker-started regression
+run is now 1.9.7 (was 1.9.6).
 
 ### Security
 
