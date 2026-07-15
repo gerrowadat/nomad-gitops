@@ -32,7 +32,7 @@ test:
 	go test -race -timeout 60s ./...
 
 ## test-regression: run the regression suite against a real Nomad cluster (via Docker).
-## Requires Docker. Set NOMAD_VERSION to target a specific version (default: 1.9.6).
+## Requires Docker. Set NOMAD_VERSION to target a specific version (default: 1.9.7).
 ## Set NOMAD_ADDR to use an existing cluster instead of starting one via Docker.
 ## Example: make test-regression NOMAD_VERSION=1.11.3
 test-regression:

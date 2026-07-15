@@ -18,7 +18,7 @@
 //
 // Environment variables:
 //
-//	NOMAD_VERSION   Nomad version to pull from Docker Hub (default: 1.9.3)
+//	NOMAD_VERSION   Nomad version to pull from Docker Hub (default: 1.9.7)
 //	NOMAD_ADDR      Use an existing cluster; skips Docker startup entirely
 //	NOMAD_TOKEN     ACL token for the cluster (if needed)
 package regression
@@ -26,7 +26,7 @@ package regression
 import "time"
 
 // defaultNomadVersion is used when NOMAD_VERSION is unset and Docker is available.
-const defaultNomadVersion = "1.9.6"
+const defaultNomadVersion = "1.9.7"
 
 // VersionRecord documents the result of running the regression suite against
 // a specific Nomad version. Records are added manually after each release.
