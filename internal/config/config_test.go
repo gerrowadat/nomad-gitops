@@ -455,6 +455,43 @@ func TestLoadFromArgs_MaxNomadStalenessEnv(t *testing.T) {
 	}
 }
 
+func TestLoadFromArgs_RecloneIntervalDefault(t *testing.T) {
+	os.Unsetenv("RECLONE_INTERVAL")
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RecloneInterval != 24*time.Hour {
+		t.Errorf("RecloneInterval default: want 24h, got %v", cfg.RecloneInterval)
+	}
+}
+
+func TestLoadFromArgs_RecloneIntervalFlag(t *testing.T) {
+	os.Unsetenv("RECLONE_INTERVAL")
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--reclone-interval", "0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RecloneInterval != 0 {
+		t.Errorf("RecloneInterval: want 0 (disabled), got %v", cfg.RecloneInterval)
+	}
+}
+
+func TestLoadFromArgs_RecloneIntervalEnv(t *testing.T) {
+	os.Setenv("RECLONE_INTERVAL", "6h")
+	t.Cleanup(func() { os.Unsetenv("RECLONE_INTERVAL") })
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RecloneInterval != 6*time.Hour {
+		t.Errorf("RecloneInterval: want 6h, got %v", cfg.RecloneInterval)
+	}
+}
+
 func TestLoadFromArgs_StalenessIndependent(t *testing.T) {
 	os.Unsetenv("MAX_GIT_STALENESS")
 	os.Unsetenv("MAX_NOMAD_STALENESS")

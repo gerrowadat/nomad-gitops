@@ -42,6 +42,7 @@ read at startup; flags override them when explicitly passed.
 | `--managed-meta-prefix` | `MANAGED_META_PREFIX` | `gitops` | Prefix for job meta keys used by nomad-gitops. With prefix `gitops`, the key `gitops_managed = "true"` opts a job in. Empty disables meta-based selection. |
 | `--max-git-staleness` | `MAX_GIT_STALENESS` | `0` (disabled) | If the git repo has not been successfully fetched within this window, force an immediate fetch. Set to `0` to disable. E.g. `--max-git-staleness=30m` |
 | `--max-nomad-staleness` | `MAX_NOMAD_STALENESS` | `0` (disabled) | If the Nomad diff check has not run within this window, force an immediate check. Set to `0` to disable. E.g. `--max-nomad-staleness=10m` |
+| `--reclone-interval` | `RECLONE_INTERVAL` | `24h` | How often to discard the in-memory git clone and fetch a fresh one, reclaiming the object store that grows as pulls accumulate history over a long-running process. Runs from the same loop as polling, so it never overlaps a pull. Set to `0` to disable. |
 | `--log-level` | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 Logs are written to stderr as JSON (structured via `log/slog`).

@@ -74,14 +74,16 @@ func NewWithRegistry(cfg *config.Config, onChange func(commit string), reg prome
 	}
 }
 
-// Clone performs the initial clone into memory. Must be called before Run.
-func (w *Watcher) Clone(ctx context.Context) error {
+// cloneInto performs a fresh clone into a new in-memory store and returns the
+// repository and its HEAD commit. It touches no Watcher state beyond the fetch
+// metrics, so it is safe to call while the current w.repo is still in use by a
+// concurrent reader; the caller decides when to swap the result in.
+func (w *Watcher) cloneInto(ctx context.Context) (*git.Repository, string, error) {
 	auth, err := w.buildAuth()
 	if err != nil {
-		return fmt.Errorf("building git auth: %w", err)
+		return nil, "", fmt.Errorf("building git auth: %w", err)
 	}
 
-	slog.Info("Cloning repository", "url", w.cfg.RepoURL, "branch", w.cfg.Branch)
 	w.gitFetches.Inc()
 
 	storer := memory.NewStorage()
@@ -96,12 +98,23 @@ func (w *Watcher) Clone(ctx context.Context) error {
 	})
 	if err != nil {
 		w.gitFetchErrors.Inc()
-		return fmt.Errorf("cloning %s: %w", w.cfg.RepoURL, err)
+		return nil, "", fmt.Errorf("cloning %s: %w", w.cfg.RepoURL, err)
 	}
 
 	commit, err := headCommit(repo)
 	if err != nil {
 		w.gitFetchErrors.Inc()
+		return nil, "", err
+	}
+	return repo, commit, nil
+}
+
+// Clone performs the initial clone into memory. Must be called before Run.
+func (w *Watcher) Clone(ctx context.Context) error {
+	slog.Info("Cloning repository", "url", w.cfg.RepoURL, "branch", w.cfg.Branch)
+
+	repo, commit, err := w.cloneInto(ctx)
+	if err != nil {
 		return err
 	}
 
@@ -118,10 +131,22 @@ func (w *Watcher) Clone(ctx context.Context) error {
 }
 
 // Run polls for updates on the configured interval and also reacts to Trigger
-// calls. Blocks until ctx is cancelled.
+// calls. It optionally re-clones on a slow cadence to reclaim memory. All git
+// operations it drives (pull, reclone) run from this single goroutine, so they
+// are serialised with each other and never overlap. Blocks until ctx is
+// cancelled.
 func (w *Watcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
+
+	// A nil channel blocks forever in select, disabling the reclone case when
+	// the interval is 0.
+	var recloneC <-chan time.Time
+	if w.cfg.RecloneInterval > 0 {
+		recloneTicker := time.NewTicker(w.cfg.RecloneInterval)
+		defer recloneTicker.Stop()
+		recloneC = recloneTicker.C
+	}
 
 	for {
 		select {
@@ -132,6 +157,44 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-w.triggerCh:
 			slog.Info("Webhook trigger received, pulling")
 			w.pull(ctx)
+		case <-recloneC:
+			w.reclone(ctx)
+		}
+	}
+}
+
+// reclone replaces the in-memory clone with a fresh one, discarding the git
+// object store that grows as pulls accumulate history. The fetch runs before
+// any lock is taken, so concurrent readers keep using the old repo; the swap is
+// atomic under w.mu, and readers that captured the old *git.Repository continue
+// against it until they finish (the old store is freed once unreferenced). A
+// failed reclone leaves the existing clone untouched. Called only from Run, so
+// it never overlaps a pull.
+func (w *Watcher) reclone(ctx context.Context) {
+	slog.Info("Re-cloning repository to reclaim memory", "url", w.cfg.RepoURL, "branch", w.cfg.Branch)
+
+	repo, commit, err := w.cloneInto(ctx)
+	if err != nil {
+		slog.Warn("Reclone failed, keeping existing clone", "err", err)
+		return
+	}
+
+	now := time.Now()
+	w.mu.Lock()
+	prev := w.lastCommit
+	w.repo = repo
+	w.lastCommit = commit
+	w.lastUpdate = now
+	w.mu.Unlock()
+
+	w.gitLastUpdate.Set(float64(now.Unix()))
+
+	if commit != prev {
+		// A reclone normally lands on the same HEAD, but a commit may have
+		// arrived since the last pull; treat it like any other new commit.
+		slog.Info("New commit observed during reclone", "branch", w.cfg.Branch, "commit", commit, "prev", prev)
+		if w.onChange != nil {
+			w.onChange(commit)
 		}
 	}
 }

@@ -113,6 +113,11 @@ type Config struct {
 	MaxGitStaleness   time.Duration
 	MaxNomadStaleness time.Duration
 
+	// RecloneInterval is how often to discard the in-memory git clone and
+	// fetch a fresh one, reclaiming the git object store that grows as pulls
+	// accumulate history over a long-running process. 0 disables reclones.
+	RecloneInterval time.Duration
+
 	// Logging
 	LogLevel string
 }
@@ -167,6 +172,7 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-gitops (e.g. 'gitops' means 'gitops_managed = true' in a job's HCL opts it in). Git is always the source of truth for these keys: when a job has an HCL file, the live job's keys are ignored for selection. Empty disables meta-based selection.")
 	fs.DurationVar(&c.MaxGitStaleness, "max-git-staleness", envDurationOrDefault("MAX_GIT_STALENESS", 0), "Maximum time since last successful git fetch before forcing a refresh (0 disables)")
 	fs.DurationVar(&c.MaxNomadStaleness, "max-nomad-staleness", envDurationOrDefault("MAX_NOMAD_STALENESS", 0), "Maximum time since last successful Nomad diff check before forcing a refresh (0 disables)")
+	fs.DurationVar(&c.RecloneInterval, "reclone-interval", envDurationOrDefault("RECLONE_INTERVAL", 24*time.Hour), "How often to discard and re-fetch the in-memory git clone to reclaim memory that grows as pulls accumulate history (0 disables)")
 
 	fs.StringVar(&c.LogLevel, "log-level", envOrDefault("LOG_LEVEL", "info"), "Log level: debug, info, warn, error")
 

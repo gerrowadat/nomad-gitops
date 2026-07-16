@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,44 @@ func TestServer_Run_BadListenAddr(t *testing.T) {
 	if err := srv.Run(ctx); err == nil {
 		t.Error("Run with an unbindable address should return an error")
 	}
+}
+
+// TestServer_Run_BadListenAddr_NoGoroutineLeak verifies that an early
+// ListenAndServe failure does not leave a goroutine blocked waiting on the
+// context. Run is called with an unbindable address (so it returns before the
+// context is ever cancelled) and the goroutine count is expected to settle
+// back to its pre-Run baseline.
+func TestServer_Run_BadListenAddr_NoGoroutineLeak(t *testing.T) {
+	cfg := &config.Config{ListenAddr: "256.256.256.256:0", WebhookPath: "/webhook", Branch: "main"}
+	diffSrc := &mockDiffSource{lastCheck: time.Now()}
+	gitSrc := &mockGitSource{lastUpdate: time.Now()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Let any goroutines from earlier tests settle before sampling.
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	for i := 0; i < 20; i++ {
+		srv := server.NewWithRegistry(cfg, diffSrc, gitSrc, server.BuildInfo{Version: "test"}, prometheus.NewRegistry())
+		if err := srv.Run(ctx); err == nil {
+			t.Fatal("Run with an unbindable address should return an error")
+		}
+	}
+
+	// The old implementation leaked one goroutine per failed Run (blocked on
+	// ctx.Done()); 20 iterations would show a clear jump. Poll to let the
+	// runtime reclaim finished goroutines before asserting.
+	var got int
+	for i := 0; i < 20; i++ {
+		got = runtime.NumGoroutine()
+		if got <= baseline+2 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Errorf("goroutine count grew after 20 failed Run calls: baseline %d, got %d", baseline, got)
 }
 
 // TestNew_DefaultRegistry exercises the production constructor, which
