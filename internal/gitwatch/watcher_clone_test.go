@@ -222,6 +222,146 @@ func TestPull_RemoteGone_RecloneFails(t *testing.T) {
 	}
 }
 
+func TestReclone_NoNewCommit_SwapsCloneQuietly(t *testing.T) {
+	dir, _ := makeDiskRepo(t, map[string]string{"app.hcl": `job "app" {}`})
+
+	changed := make(chan string, 1)
+	w := newTestWatcher(&config.Config{RepoURL: dir, Branch: "main"}, func(commit string) {
+		changed <- commit
+	})
+	if err := w.Clone(context.Background()); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	first := w.LastCommit()
+	oldRepo := w.repo
+
+	w.reclone(context.Background())
+
+	if w.LastCommit() != first {
+		t.Errorf("reclone changed commit without a new commit: %q -> %q", first, w.LastCommit())
+	}
+	if w.repo == oldRepo {
+		t.Error("reclone should have swapped in a fresh repository")
+	}
+	select {
+	case c := <-changed:
+		t.Errorf("reclone fired onChange with no new commit: %q", c)
+	default:
+	}
+
+	// The swapped-in clone still serves file contents.
+	files, err := w.ReadHCLFiles()
+	if err != nil {
+		t.Fatalf("ReadHCLFiles after reclone: %v", err)
+	}
+	if files["app.hcl"] != `job "app" {}` {
+		t.Errorf("reclone lost file contents: %v", files)
+	}
+}
+
+func TestReclone_NewCommit_FiresOnChange(t *testing.T) {
+	dir, repo := makeDiskRepo(t, map[string]string{"app.hcl": `job "app" {}`})
+
+	changed := make(chan string, 1)
+	w := newTestWatcher(&config.Config{RepoURL: dir, Branch: "main"}, func(commit string) {
+		changed <- commit
+	})
+	if err := w.Clone(context.Background()); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	first := w.LastCommit()
+
+	// A commit arrives before the reclone (e.g. no pull ran in between).
+	commitFiles(t, dir, repo, map[string]string{"app.hcl": `job "app" { type = "service" }`}, "update app")
+
+	w.reclone(context.Background())
+
+	select {
+	case commit := <-changed:
+		if commit == first {
+			t.Error("reclone fired onChange with the old commit")
+		}
+		if commit != w.LastCommit() {
+			t.Errorf("onChange commit %q != LastCommit %q", commit, w.LastCommit())
+		}
+	default:
+		t.Fatal("reclone did not fire onChange for a new commit")
+	}
+}
+
+func TestReclone_Fails_KeepsExistingClone(t *testing.T) {
+	dir, _ := makeDiskRepo(t, map[string]string{"app.hcl": `job "app" {}`})
+
+	w := newTestWatcher(&config.Config{RepoURL: dir, Branch: "main"}, nil)
+	if err := w.Clone(context.Background()); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	first := w.LastCommit()
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("removing source repo: %v", err)
+	}
+	w.reclone(context.Background())
+
+	if w.LastCommit() != first {
+		t.Error("commit should be unchanged after a failed reclone")
+	}
+	if !w.Ready() {
+		t.Error("watcher should keep serving the last good clone after a failed reclone")
+	}
+	if _, err := w.ReadHCLFiles(); err != nil {
+		t.Errorf("existing clone should still be readable after failed reclone: %v", err)
+	}
+}
+
+func TestRun_RecloneIntervalCausesReclone(t *testing.T) {
+	dir, _ := makeDiskRepo(t, map[string]string{"app.hcl": `job "app" {}`})
+
+	w := newTestWatcher(&config.Config{
+		RepoURL:         dir,
+		Branch:          "main",
+		PollInterval:    time.Hour,
+		RecloneInterval: 50 * time.Millisecond,
+	}, nil)
+	if err := w.Clone(context.Background()); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	w.mu.RLock()
+	oldRepo := w.repo
+	w.mu.RUnlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the reclone ticker to swap in a fresh repository.
+	swapped := false
+	for i := 0; i < 100; i++ {
+		w.mu.RLock()
+		cur := w.repo
+		w.mu.RUnlock()
+		if cur != oldRepo {
+			swapped = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !swapped {
+		t.Error("reclone interval did not trigger a reclone")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after context cancel")
+	}
+}
+
 func TestRun_TriggerCausesPull(t *testing.T) {
 	dir, repo := makeDiskRepo(t, map[string]string{"app.hcl": `job "app" {}`})
 

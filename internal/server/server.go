@@ -169,18 +169,36 @@ func (s *Server) newHTTPServer() *http.Server {
 func (s *Server) Run(ctx context.Context) error {
 	srv := s.newHTTPServer()
 
+	// ListenAndServe runs in the background so the main path can wait on both
+	// it and ctx. Keeping it here (rather than a separate ctx.Done waiter
+	// goroutine) means the goroutine always ends before Run returns: on
+	// shutdown ListenAndServe returns ErrServerClosed, and on an early bind
+	// error it returns that error directly — neither outlives Run.
+	serveErr := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		err := srv.ListenAndServe()
+		if err == http.ErrServerClosed {
+			err = nil
+		}
+		serveErr <- err
 	}()
 
 	slog.Info("HTTP server listening", "addr", s.cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("http server: %w", err)
+
+	select {
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+		// Drain the serve goroutine so it does not outlive Run.
+		<-serveErr
+		return nil
+	case err := <-serveErr:
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
 	}
-	return nil
 }
 
 // Handler returns the underlying http.Handler, useful for testing without a
