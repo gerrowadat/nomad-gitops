@@ -48,6 +48,54 @@ anyone already relying on it.
 
 ---
 
+## Verified against upstream docs
+
+Three assumptions below aren't just convenient — they're checked against
+Nomad's own documentation and API client source (`hashicorp/nomad/api` at the
+version this repo's `go.mod` pins), plus the closest prior art for
+drift-ignore mechanisms in other tools:
+
+- **Meta values have no native list type, so a list must be string-encoded.**
+  ["Meta" block in the job specification](https://github.com/hashicorp/web-unified-docs/blob/main/content/nomad/v2.0.x/content/docs/job-specification/meta.mdx):
+  "The keys and values are both of type `string`... Internally, these values
+  will be stored as their string representation. No type information is
+  preserved." There's no way around encoding `gitops_ignore_diff`'s list as a
+  single string; the only design choice is the delimiter/grammar.
+- **Comma-separated is Nomad's own convention for a list-valued meta value,
+  not something this proposal invents.** The
+  [`constraint` block docs](https://github.com/hashicorp/web-unified-docs/blob/main/content/nomad/v2.0.x/content/docs/job-specification/constraint.mdx)
+  document `set_contains` / `set_contains_any` explicitly: "The attribute and
+  the list being checked are split using commas," with a worked example using
+  a meta value as the set being tested: `constraint { attribute =
+  "${meta.cached_binaries}" set_contains = "redis,cypress,nginx" }`. This is
+  the strongest available precedent for how Nomad itself expects a list
+  packed into one string value, and it's specifically a *meta* value in the
+  example — so comma-separated is the existing convention to match, not a
+  new one to justify from scratch.
+- **`!`-prefixed negation has real precedent, but not inside HashiCorp's own
+  tooling.** `.gitignore` documents exactly this pattern — "a line starting
+  with `!` negates the pattern; any matching file excluded by a previous
+  pattern will become included again" — but it also documents a sharp edge
+  worth avoiding: a file cannot be re-included if a **parent** of that file is
+  itself excluded, because Git doesn't descend into excluded directories to
+  check. That edge case exists because `.gitignore` patterns are an
+  *ordered* list where later lines can override earlier ones and matching
+  is hierarchical (files under directories). Our merge is neither: it is a
+  flat set union of two sources (flag, then meta) with no directory-style
+  parent/child relationship between categories, so there is no equivalent
+  trap — `!resources` simply removes `resources` from the union, full stop.
+  Terraform's `lifecycle.ignore_changes` — the closest infrastructure-as-code
+  analog to this whole feature — takes a flat attribute list (plus the
+  literal keyword `all`) and has **no** negation operator at all, because it
+  only ever has one list to configure, set by one author, in one place.
+  That's the one respect in which our situation differs from Terraform's:
+  we deliberately have two authors writing to two merged layers (an operator's
+  global flag, a job owner's meta key), which is exactly the situation
+  `.gitignore`'s negation was designed for (a shared, layered set of rules
+  with per-scope exceptions) and Terraform's wasn't.
+
+---
+
 ## Decisions made before writing this proposal
 
 These were resolved with the maintainer up front because they shape
@@ -90,7 +138,7 @@ extends the same idea to more buckets):
 | Category | What it covers | Motivating case |
 |---|---|---|
 | `count` | `TaskGroup.Count` / `Scaling` | Nomad Autoscaler (horizontal), manual out-of-band scaling |
-| `resources` | Task `Resources` (CPU, MemoryMB, cores, …) | Nomad Autoscaler Dynamic Application Sizing |
+| `resources` | Task `Resources` (CPU, MemoryMB, cores, …) | Nomad Autoscaler Dynamic Application Sizing, or any other tool that rewrites `Resources` directly |
 | `env` | Task `Env` | Secrets/config injected by tooling other than Git |
 | `meta` | `Meta` fields **not** under `--managed-meta-prefix` | Sidecar injectors, other operators tagging the same job |
 | `templates` | Task `Templates` | Vault Agent / consul-template rendering |
@@ -150,9 +198,14 @@ meta {
 
 `gitops_ignore_diff` takes a comma-separated list of entries, each either a
 bare category name, a `path:`-prefixed pattern, or a `!`-prefixed category
-name that narrows the global list back down (see below). Same validation
-posture as the other keys in `docs/meta-keys.md`: an unrecognised entry is
-logged and dropped, not fatal to the rest of the key.
+name that narrows the global list back down (see below). Comma-separation
+isn't a new convention invented for this key — it's how Nomad's own
+`set_contains`/`set_contains_any` constraint operators already expect a list
+packed into a single string value, including a meta value specifically (see
+"Verified against upstream docs" above), so this key reads the same way an
+operator's other comma-separated meta/attribute values already do. Same
+validation posture as the other keys in `docs/meta-keys.md`: an unrecognised
+entry is logged and dropped, not fatal to the rest of the key.
 
 ### Flag
 
@@ -266,6 +319,36 @@ proposal ships is purely internal — `autoscaledGroups` becomes one input to
 constructed separately in three files. No migration, no config change
 required for anyone already relying on today's behavior.
 
+**A `resources` equivalent is plausible but not proposed here, and one detail
+needs checking first.** Nomad's job spec supports a *task-level* `scaling`
+block — labeled `scaling "cpu" { }` / `scaling "mem" { }`, per the
+[`scaling` block docs](https://github.com/hashicorp/web-unified-docs/blob/main/content/nomad/v2.0.x/content/docs/job-specification/scaling.mdx)
+— which is Dynamic Application Sizing's job-spec surface and controls the
+task's `Resources` the same way a group-level `scaling` block controls
+`Count`. `Task.ScalingPolicies []*ScalingPolicy` (`api/tasks.go`) is exactly
+parallel to `TaskGroup.Scaling`, which makes an automatic, un-narrowable
+`resources` builtin — mirroring the `count` builtin above — a plausible
+future addition, keyed off "this task has an enabled scaling policy" instead
+of "this group does." Two things hold that back from being proposed now:
+
+- The DAS *plugins* that actually populate these recommendations are
+  Nomad Autoscaler **Enterprise** only, per HashiCorp's own docs — the
+  job-spec block itself is open source and unpriviledged, but the
+  best-known thing that writes to it today is not, which narrows how many
+  deployments this would help out of the gate. Nothing stops a homegrown
+  tool from using the same open job-spec mechanism, though.
+- The vendored `hashicorp/nomad/api` client this repo pins only defines
+  `ScalingPolicyTypeHorizontal = "horizontal"` — there is no corresponding
+  `vertical_cpu` / `vertical_mem` (or similarly named) constant in that
+  package to check `ScalingPolicy.Type` against. The server presumably sets
+  *some* distinct value for a task-level policy (`Type` defaults to
+  `"horizontal"` only when unset, per `ScalingPolicy.Canonicalize`), but the
+  exact string is not confirmed from the client library alone and would need
+  checking against a running Nomad server (or the `nomad` core repo, out of
+  scope for this client-only codebase) before any code relies on it.
+
+Left as an open question below rather than folded into the core proposal.
+
 ---
 
 ## Observability
@@ -338,6 +421,12 @@ Per this repo's own documentation rules:
 
 ## Open questions
 
+- **A `resources` builtin mirroring the `count` builtin.** Worth adding once
+  the server-side `ScalingPolicy.Type` value for a task-level (`scaling
+  "cpu"`/`"mem"`) policy is confirmed against a real Nomad server or the
+  `nomad` core source — the vendored `hashicorp/nomad/api` client only
+  defines the horizontal-scaling constant, not this one. See "Autoscaler
+  `Count`: folded in, not removed" above.
 - **Starting category list.** Ship all eight categories above, or start with
   the ones that have a concrete motivating case today (`count`, `resources`,
   `env`, `meta`) and add `templates`/`constraints`/`network`/`volumes` only
