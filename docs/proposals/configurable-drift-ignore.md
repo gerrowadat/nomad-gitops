@@ -1,6 +1,6 @@
 # Proposal: configurable drift-ignore rules
 
-**Status**: draft
+**Status**: draft  
 **Date**: 2026-07-19
 
 ## Background
@@ -345,7 +345,7 @@ of "this group does." Two things hold that back from being proposed now:
 
 - The DAS *plugins* that actually populate these recommendations are
   Nomad Autoscaler **Enterprise** only, per HashiCorp's own docs — the
-  job-spec block itself is open source and unpriviledged, but the
+  job-spec block itself is open source and unprivileged, but the
   best-known thing that writes to it today is not, which narrows how many
   deployments this would help out of the gate. Nothing stops a homegrown
   tool from using the same open job-spec mechanism, though.
