@@ -223,6 +223,18 @@ months ago.
 
 ### Merge semantics
 
+**Per category, the job's own meta always wins over the global flag** — for
+both directions. If a job's `gitops_ignore_diff` adds a category, that
+category is ignored for that job even if `--default-ignore-diff` never
+mentioned it. If a job's `gitops_ignore_diff` narrows a category away with
+`!category`, that category is *not* ignored for that job even though the
+flag lists it globally. The flag only ever supplies the default for
+categories the job's meta doesn't mention at all — the same "meta overrides
+the flag in either direction" principle `gitops_update_policy` already
+uses relative to `--default-update-policy` (see
+[update-policies.md](../design/update-policies.md)), applied here per
+category instead of to one scalar value.
+
 The effective ignore set for a job is:
 
 ```
