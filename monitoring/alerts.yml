@@ -12,21 +12,26 @@ groups:
   - name: nomad_gitops_drift
     rules:
 
-      # Any drift detected. The 5m 'for' window absorbs the normal gap
-      # between a git push and the next diff check — a job transitioning
-      # through a deploy will look drifted briefly. Tune to your
-      # --diff-interval / --poll-interval values.
+      # Any drift detected, alerting per job so the offending job and diff
+      # type are named in the alert itself (via the `job` and `diff_type`
+      # labels) rather than only a count. nomad_gitops_job_diffs is 1 for each
+      # drifting (job, diff_type) and absent otherwise, so the 5m 'for' window
+      # means "this job has been drifting for 5m" — absorbing the normal gap
+      # between a git push and the next diff check, where a job transitioning
+      # through a deploy looks drifted briefly. Tune to your --diff-interval /
+      # --poll-interval values. Alertmanager will group the per-job alerts
+      # (e.g. group_by: [alertname]) into a single notification listing them.
       - alert: NomadJobDrift
-        expr: nomad_gitops:drifted_jobs:total > 0
+        expr: nomad_gitops_job_diffs > 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $value }} Nomad job(s) have drifted from git"
+          summary: "Nomad job {{ $labels.job }} has drifted from git ({{ $labels.diff_type }})"
           description: >
-            nomad-gitops has detected drift between the git repo and the
-            live Nomad cluster for more than 5 minutes.
-            Check /healthz or /diffs for details.
+            nomad-gitops has detected drift ({{ $labels.diff_type }}) between
+            the git repo and the live Nomad cluster for job {{ $labels.job }}
+            for more than 5 minutes. Check /healthz or /diffs for details.
 
       # A specific job has been in a modified state for an extended period.
       # This usually means a deploy is stuck or someone edited the job in
