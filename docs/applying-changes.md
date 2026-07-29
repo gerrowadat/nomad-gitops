@@ -210,3 +210,25 @@ in the OpenAPI spec. Values:
 | `deregister_pending_grace` | Removed from the repo; deregistration is waiting out `--deregister-grace`. |
 | `no_actionable_change` | The only diff is autoscaler-owned Count/Scaling churn. |
 | `blocked_known_failed` | The flap-loop guard is holding the apply: this spec matches a recent deployment that failed. Released when Git moves to a spec that has not failed. See [Rollback](rollback.md). |
+
+For a policy block, the coarse `blocked_by_policy` action is accompanied by an
+`apply_detail` string that names the effective policy, where it came from (the
+job's `gitops_update_policy` meta key or the `--default-update-policy` default),
+and what to change to apply it — for example:
+
+```
+→ not applied: update policy is "none" (the --default-update-policy default), which never applies drift for this job. Set the policy to "image-only" or "full" to enable applies.
+→ not applied: update policy is "image-only" (set by gitops_update_policy in the job's HCL meta), but this change modifies more than the container image. Set the policy to "full" to apply it.
+```
+
+When the `gitops_update_policy` meta value is not a recognised policy, it is
+coerced to `none`; the detail surfaces the raw value and the coercion rather
+than claiming the job asked for `none`:
+
+```
+→ not applied: gitops_update_policy is set to "yolo" in the job's HCL meta, which is not a valid update policy, so it is treated as "none" and never applies drift for this job. Set gitops_update_policy to "image-only" or "full" to enable applies.
+```
+
+The `/diffs` text view shows this `apply_detail` in place of the generic
+description when it is present; the JSON APIs expose it as the `apply_detail`
+field (omitted when the action alone is self-explanatory).

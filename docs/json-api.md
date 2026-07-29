@@ -64,7 +64,8 @@ Example `/api/v1/diffs` response when drift is detected:
       "hcl_file": "jobs/api-server.hcl",
       "diff_type": "modified",
       "detail": "Nomad plan shows diff type \"Edited\"",
-      "apply_action": "blocked_by_policy"
+      "apply_action": "blocked_by_policy",
+      "apply_detail": "not applied: update policy is \"none\" (the --default-update-policy default), which never applies drift for this job. Set the policy to \"image-only\" or \"full\" to enable applies."
     },
     {
       "job_id": "legacy-worker",
@@ -78,6 +79,12 @@ Example `/api/v1/diffs` response when drift is detected:
 }
 ```
 
-The `apply_action` field on each diff explains whether and why it will (not) be
-applied — see
+The `apply_action` field on each diff is a stable machine-readable disposition
+explaining whether and why it will (not) be applied — see
 [Why a diff is or is not applied](applying-changes.md#why-a-diff-is-or-is-not-applied).
+Some dispositions also carry an `apply_detail`: a human-readable string with the
+specific values involved (for a policy block, the effective policy, where it came
+from — a job's meta key or the `--default-update-policy` default — and what to
+change to apply it). It is omitted when `apply_action` alone says everything. The
+`/diffs` text view shows `apply_detail` in place of the generic description when
+it is present.

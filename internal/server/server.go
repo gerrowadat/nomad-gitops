@@ -386,6 +386,7 @@ type DiffEntry struct {
 	DiffType    string `json:"diff_type"`
 	Detail      string `json:"detail"`
 	ApplyAction string `json:"apply_action,omitempty"`
+	ApplyDetail string `json:"apply_detail,omitempty"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -415,6 +416,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			DiffType:    string(d.DiffType),
 			Detail:      d.Detail,
 			ApplyAction: string(d.ApplyAction),
+			ApplyDetail: d.ApplyDetail,
 		})
 	}
 

@@ -72,6 +72,13 @@ type JobDiff struct {
 	// non-application without log scraping.
 	ApplyAction ApplyAction `json:"apply_action,omitempty"`
 
+	// ApplyDetail is an optional, more specific human-readable explanation
+	// that refines ApplyAction with the actual values involved — for example,
+	// which update policy blocked the change, where that policy came from, and
+	// what would need to change. Empty when ApplyAction.Describe() already says
+	// everything there is to say.
+	ApplyDetail string `json:"apply_detail,omitempty"`
+
 	// PlanDiff holds the structured diff from the Nomad plan API.
 	// Only populated for DiffTypeModified entries.
 	PlanDiff *nomadapi.JobDiff `json:"-"`
@@ -791,16 +798,17 @@ func (d *Differ) parseHCLCandidates(hclFiles map[string]string, metaSeen map[str
 // JobUpdate: the parsed job, the CAS token, and the diff classification.
 // Policy gating happens later, in maybeEnqueueUpdate.
 type updateCandidate struct {
-	jobID       string
-	hclFile     string
-	job         *nomadapi.Job
-	modifyIndex uint64
-	class       DiffClass
-	isCreation  bool               // job absent (or dead) in Nomad: first-time registration
-	globSel     bool               // selected by job-selector-glob (no opt-in moment)
-	operation   JobUpdateOperation // REGISTER (default) or DEREGISTER
-	policy      UpdatePolicy       // effective policy, for DEREGISTER candidates (from live meta)
-	action      ApplyAction        // disposition, decided in decideApplyAction
+	jobID        string
+	hclFile      string
+	job          *nomadapi.Job
+	modifyIndex  uint64
+	class        DiffClass
+	isCreation   bool               // job absent (or dead) in Nomad: first-time registration
+	globSel      bool               // selected by job-selector-glob (no opt-in moment)
+	operation    JobUpdateOperation // REGISTER (default) or DEREGISTER
+	policy       UpdatePolicy       // effective policy, for DEREGISTER candidates (from live meta)
+	action       ApplyAction        // disposition, decided in decideApplyAction
+	actionDetail string             // optional specific explanation refining action
 }
 
 // jobModifyIndex safely extracts a job's ModifyIndex.
@@ -1050,6 +1058,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 			}
 			if cand != nil {
 				diff.ApplyAction = cand.action
+				diff.ApplyDetail = cand.actionDetail
 			}
 			// A diff confined to our own meta keys is an expected,
 			// non-disruptive difference. By default it is not counted as
@@ -1120,6 +1129,7 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 				}
 				cand.action = d.decideDeregisterAction(cand)
 				diff.ApplyAction = cand.action
+				diff.ApplyDetail = cand.actionDetail
 				candidates = append(candidates, cand)
 			}
 			diffs = append(diffs, diff)
@@ -1174,6 +1184,50 @@ func (d *Differ) effectivePolicy(meta map[string]string) UpdatePolicy {
 		}
 	}
 	return d.defaultPolicy
+}
+
+// policyMetaKey is the meta key that overrides the update policy per job.
+func (d *Differ) policyMetaKey() string {
+	return d.managedMetaPrefix + "_update_policy"
+}
+
+// policySource describes where a job's effective update policy comes from, for
+// operator-facing messages: the per-job HCL meta key (only when its value is a
+// recognised policy) or the configured default. A present-but-invalid meta
+// value is handled separately by policyBlockedDetail, since effectivePolicy
+// coerces it to "none" and the raw value is what the operator needs to see.
+func (d *Differ) policySource(meta map[string]string) string {
+	if d.managedMetaPrefix != "" {
+		if v, ok := meta[d.policyMetaKey()]; ok && ValidUpdatePolicy(v) {
+			return "set by " + d.policyMetaKey() + " in the job's HCL meta"
+		}
+	}
+	return "the --default-update-policy default"
+}
+
+// policyBlockedDetail explains, for the /diffs view and JSON API, exactly why a
+// candidate's effective update policy stops this change from being applied: the
+// policy value, where it came from, and what would need to change to apply it.
+func (d *Differ) policyBlockedDetail(c *updateCandidate, policy UpdatePolicy) string {
+	// A present-but-unrecognised meta value is coerced to "none" by
+	// effectivePolicy. Report the actual value and the coercion rather than
+	// claiming the operator asked for "none".
+	if d.managedMetaPrefix != "" {
+		if v, ok := c.job.Meta[d.policyMetaKey()]; ok && !ValidUpdatePolicy(v) {
+			return fmt.Sprintf("not applied: %s is set to %q in the job's HCL meta, which is not a valid update policy, so it is treated as %q and never applies drift for this job. Set %s to \"image-only\" or \"full\" to enable applies.", d.policyMetaKey(), v, UpdatePolicyNone, d.policyMetaKey())
+		}
+	}
+	src := d.policySource(c.job.Meta)
+	switch policy {
+	case UpdatePolicyNone:
+		return fmt.Sprintf("not applied: update policy is %q (%s), which never applies drift for this job. Set the policy to \"image-only\" or \"full\" to enable applies.", policy, src)
+	case UpdatePolicyImageOnly:
+		if c.isCreation {
+			return fmt.Sprintf("not applied: update policy is %q (%s), and a first-time registration is not an image-only change. Set the policy to \"full\" to allow creating this job.", policy, src)
+		}
+		return fmt.Sprintf("not applied: update policy is %q (%s), but this change modifies more than the container image. Set the policy to \"full\" to apply it.", policy, src)
+	}
+	return ""
 }
 
 // SetHistorySource wires the git-history accessor used to detect pre-existing
@@ -1314,6 +1368,7 @@ func (d *Differ) decideDeregisterAction(c *updateCandidate) ApplyAction {
 	}
 	if c.policy != UpdatePolicyFull {
 		d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(c.policy)).Inc()
+		c.actionDetail = fmt.Sprintf("not applied: deregistration requires update policy \"full\", but this job's effective policy is %q. A job removed from the repo is only deregistered under a full policy.", c.policy)
 		return ApplyActionPolicyBlocked
 	}
 	if !d.orphanGraceElapsed(c.jobID) {
@@ -1369,12 +1424,14 @@ func (d *Differ) decideApplyAction(c *updateCandidate, commit string, q *nomadap
 	switch policy {
 	case UpdatePolicyNone:
 		d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(policy)).Inc()
+		c.actionDetail = d.policyBlockedDetail(c, policy)
 		return ApplyActionPolicyBlocked
 	case UpdatePolicyImageOnly:
 		// Initial registration is full-only by design: registering a job
 		// for the first time is not an image-only change.
 		if c.isCreation || c.class != DiffClassImageOnly {
 			d.updatesBlockedByPolicy.WithLabelValues(c.jobID, string(policy)).Inc()
+			c.actionDetail = d.policyBlockedDetail(c, policy)
 			return ApplyActionPolicyBlocked
 		}
 	}

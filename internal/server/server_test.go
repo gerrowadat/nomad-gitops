@@ -312,6 +312,38 @@ func TestHealthz_WithDiffs(t *testing.T) {
 	}
 }
 
+func TestHealthz_ApplyDetailInJSON(t *testing.T) {
+	detail := `not applied: update policy is "none" (the --default-update-policy default), which never applies drift for this job.`
+	diffs := []nomad.JobDiff{
+		{
+			JobID:       "api",
+			HCLFile:     "jobs/api.hcl",
+			DiffType:    nomad.DiffTypeModified,
+			Detail:      "Edited",
+			ApplyAction: nomad.ApplyActionPolicyBlocked,
+			ApplyDetail: detail,
+		},
+	}
+	srv, _ := newTestServer(t, diffs)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	var resp server.HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Diffs) != 1 {
+		t.Fatalf("want 1 diff entry, got %d", len(resp.Diffs))
+	}
+	if resp.Diffs[0].ApplyAction != string(nomad.ApplyActionPolicyBlocked) {
+		t.Errorf("apply_action: want %q, got %q", nomad.ApplyActionPolicyBlocked, resp.Diffs[0].ApplyAction)
+	}
+	if resp.Diffs[0].ApplyDetail != detail {
+		t.Errorf("apply_detail: want %q, got %q", detail, resp.Diffs[0].ApplyDetail)
+	}
+}
+
 func TestHealthz_ContentType(t *testing.T) {
 	srv, _ := newTestServer(t, nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
