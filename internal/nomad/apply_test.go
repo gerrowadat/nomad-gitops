@@ -231,6 +231,65 @@ func TestApply_DefaultPolicyNone_NothingApplied(t *testing.T) {
 	}
 }
 
+// requireDetail fails unless every want substring is present in the diff's
+// ApplyDetail.
+func requireDetail(t *testing.T, d *nomad.Differ, wantAction nomad.ApplyAction, wants ...string) {
+	t.Helper()
+	diffs, _, _ := d.Diffs()
+	if len(diffs) != 1 {
+		t.Fatalf("want 1 diff, got %d: %+v", len(diffs), diffs)
+	}
+	if diffs[0].ApplyAction != wantAction {
+		t.Fatalf("ApplyAction: want %q, got %q", wantAction, diffs[0].ApplyAction)
+	}
+	detail := diffs[0].ApplyDetail
+	if detail == "" {
+		t.Fatalf("ApplyDetail should be populated for a %q diff", wantAction)
+	}
+	for _, w := range wants {
+		if !strings.Contains(detail, w) {
+			t.Errorf("ApplyDetail %q should mention %q", detail, w)
+		}
+	}
+}
+
+func TestApply_DefaultPolicyNone_DetailNamesDefaultSource(t *testing.T) {
+	var calls []registerCall
+	mock := applyMock(map[string]string{"gitops_managed": "true"}, editedMixedDiff(), 42, &calls)
+	d := nomad.NewWithClient(applyCfg("none", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+
+	// The job sets no gitops_update_policy, so "none" is the default's doing.
+	requireDetail(t, d, nomad.ApplyActionPolicyBlocked,
+		`"none"`, "--default-update-policy default", "image-only", "full")
+}
+
+func TestApply_MetaPolicyNone_DetailNamesMetaKey(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "none"}
+	mock := applyMock(meta, editedMixedDiff(), 42, &calls)
+	// Default is full; the per-job meta key is what forces "none".
+	d := nomad.NewWithClient(applyCfg("full", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+
+	requireDetail(t, d, nomad.ApplyActionPolicyBlocked,
+		`"none"`, "set by gitops_update_policy in the job's HCL meta")
+}
+
+func TestApply_ImageOnlyPolicy_MixedDiff_DetailExplainsScope(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "image-only"}
+	mock := applyMock(meta, editedMixedDiff(), 42, &calls)
+	d := nomad.NewWithClient(applyCfg("none", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+
+	requireDetail(t, d, nomad.ApplyActionPolicyBlocked,
+		`"image-only"`, "modifies more than the container image", "full")
+}
+
 func TestApply_MetaPolicyFull_RegistersWithCAS(t *testing.T) {
 	var calls []registerCall
 	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "full"}

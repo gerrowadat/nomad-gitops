@@ -140,3 +140,45 @@ func TestRenderFields_EditedType(t *testing.T) {
 		t.Errorf("edited field should render with '~' and old/new values, got:\n%s", out)
 	}
 }
+
+// TestRenderDiffsText_ApplyDetailPreferred verifies that when a diff carries a
+// specific ApplyDetail, the renderer shows it instead of the generic
+// ApplyAction.Describe() text.
+func TestRenderDiffsText_ApplyDetailPreferred(t *testing.T) {
+	detail := `not applied: update policy is "none" (the --default-update-policy default), which never applies drift for this job. Set the policy to "image-only" or "full" to enable applies.`
+	diffs := []nomad.JobDiff{
+		{
+			JobID:       "myapp",
+			HCLFile:     "myapp.hcl",
+			DiffType:    nomad.DiffTypeModified,
+			Detail:      "changed",
+			ApplyAction: nomad.ApplyActionPolicyBlocked,
+			ApplyDetail: detail,
+		},
+	}
+	out := renderDiffsText(diffs, time.Now(), "abc123", false)
+	if !strings.Contains(out, detail) {
+		t.Errorf("renderer should show the specific ApplyDetail, got:\n%s", out)
+	}
+	if strings.Contains(out, nomad.ApplyActionPolicyBlocked.Describe()) {
+		t.Errorf("renderer should not fall back to the generic Describe() when ApplyDetail is set, got:\n%s", out)
+	}
+}
+
+// TestRenderDiffsText_ApplyActionFallback verifies that without an ApplyDetail
+// the renderer still shows the generic ApplyAction description.
+func TestRenderDiffsText_ApplyActionFallback(t *testing.T) {
+	diffs := []nomad.JobDiff{
+		{
+			JobID:       "myapp",
+			HCLFile:     "myapp.hcl",
+			DiffType:    nomad.DiffTypeModified,
+			Detail:      "changed",
+			ApplyAction: nomad.ApplyActionCreationBlocked,
+		},
+	}
+	out := renderDiffsText(diffs, time.Now(), "abc123", false)
+	if !strings.Contains(out, nomad.ApplyActionCreationBlocked.Describe()) {
+		t.Errorf("renderer should fall back to Describe() when ApplyDetail is empty, got:\n%s", out)
+	}
+}

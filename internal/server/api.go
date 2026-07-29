@@ -186,7 +186,8 @@ const openAPISpec = `{
           "hcl_file":  {"type": "string"},
           "diff_type": {"type": "string", "enum": ["modified", "missing_from_nomad", "missing_from_hcl"]},
           "detail":    {"type": "string"},
-          "apply_action": {"type": "string", "description": "Disposition of this diff: whether it will be applied and, if not, why.", "enum": ["queued", "blocked_by_policy", "blocked_preexisting_drift", "blocked_creation_disabled", "skipped_meta_only", "observation_only", "queued_deregister", "deregister_pending_grace", "no_actionable_change", "blocked_known_failed"]}
+          "apply_action": {"type": "string", "description": "Disposition of this diff: whether it will be applied and, if not, why.", "enum": ["queued", "blocked_by_policy", "blocked_preexisting_drift", "blocked_creation_disabled", "skipped_meta_only", "observation_only", "queued_deregister", "deregister_pending_grace", "no_actionable_change", "blocked_known_failed"]},
+          "apply_detail": {"type": "string", "description": "Optional human-readable explanation refining apply_action with the specific values involved (e.g. the effective update policy, its source, and what to change to apply the diff). Omitted when apply_action alone is self-explanatory."}
         }
       },
       "SelectedJob": {
