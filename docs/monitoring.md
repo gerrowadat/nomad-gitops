@@ -141,7 +141,7 @@ configuration files:
 
 The alerts cover:
 
-- **NomadJobDrift** — any drift detected for more than 5 minutes
+- **NomadJobDrift** — any drift detected for more than 5 minutes, alerting per job so the alert names the drifting job and diff type
 - **NomadJobModifiedPersistent** — a job's config has diverged from git for over 1 hour
 - **NomadJobMissingFromNomad** — a git-defined job has been absent from Nomad for over 15 minutes
 - **NomadJobMissingFromHCL** — a running Nomad job has no HCL file in the repo for over 1 hour
