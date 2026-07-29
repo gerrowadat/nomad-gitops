@@ -290,6 +290,20 @@ func TestApply_ImageOnlyPolicy_MixedDiff_DetailExplainsScope(t *testing.T) {
 		`"image-only"`, "modifies more than the container image", "full")
 }
 
+func TestApply_InvalidMetaPolicy_DetailSurfacesRawValue(t *testing.T) {
+	var calls []registerCall
+	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "yolo"}
+	mock := applyMock(meta, editedMixedDiff(), 42, &calls)
+	// Default is full; the invalid meta value is coerced to none. The detail
+	// must show the raw "yolo" and the coercion, not claim the operator set none.
+	d := nomad.NewWithClient(applyCfg("full", false), mock)
+
+	runCheck(t, d, "aaaa111fffff")
+
+	requireDetail(t, d, nomad.ApplyActionPolicyBlocked,
+		`gitops_update_policy is set to "yolo"`, "not a valid update policy", `treated as "none"`)
+}
+
 func TestApply_MetaPolicyFull_RegistersWithCAS(t *testing.T) {
 	var calls []registerCall
 	meta := map[string]string{"gitops_managed": "true", "gitops_update_policy": "full"}

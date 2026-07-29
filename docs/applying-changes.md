@@ -221,6 +221,14 @@ and what to change to apply it — for example:
 → not applied: update policy is "image-only" (set by gitops_update_policy in the job's HCL meta), but this change modifies more than the container image. Set the policy to "full" to apply it.
 ```
 
+When the `gitops_update_policy` meta value is not a recognised policy, it is
+coerced to `none`; the detail surfaces the raw value and the coercion rather
+than claiming the job asked for `none`:
+
+```
+→ not applied: gitops_update_policy is set to "yolo" in the job's HCL meta, which is not a valid update policy, so it is treated as "none" and never applies drift for this job. Set gitops_update_policy to "image-only" or "full" to enable applies.
+```
+
 The `/diffs` text view shows this `apply_detail` in place of the generic
 description when it is present; the JSON APIs expose it as the `apply_detail`
 field (omitted when the action alone is self-explanatory).

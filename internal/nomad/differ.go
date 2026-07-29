@@ -1186,13 +1186,20 @@ func (d *Differ) effectivePolicy(meta map[string]string) UpdatePolicy {
 	return d.defaultPolicy
 }
 
+// policyMetaKey is the meta key that overrides the update policy per job.
+func (d *Differ) policyMetaKey() string {
+	return d.managedMetaPrefix + "_update_policy"
+}
+
 // policySource describes where a job's effective update policy comes from, for
-// operator-facing messages: the per-job HCL meta key or the configured default.
+// operator-facing messages: the per-job HCL meta key (only when its value is a
+// recognised policy) or the configured default. A present-but-invalid meta
+// value is handled separately by policyBlockedDetail, since effectivePolicy
+// coerces it to "none" and the raw value is what the operator needs to see.
 func (d *Differ) policySource(meta map[string]string) string {
 	if d.managedMetaPrefix != "" {
-		key := d.managedMetaPrefix + "_update_policy"
-		if _, ok := meta[key]; ok {
-			return "set by " + key + " in the job's HCL meta"
+		if v, ok := meta[d.policyMetaKey()]; ok && ValidUpdatePolicy(v) {
+			return "set by " + d.policyMetaKey() + " in the job's HCL meta"
 		}
 	}
 	return "the --default-update-policy default"
@@ -1202,6 +1209,14 @@ func (d *Differ) policySource(meta map[string]string) string {
 // candidate's effective update policy stops this change from being applied: the
 // policy value, where it came from, and what would need to change to apply it.
 func (d *Differ) policyBlockedDetail(c *updateCandidate, policy UpdatePolicy) string {
+	// A present-but-unrecognised meta value is coerced to "none" by
+	// effectivePolicy. Report the actual value and the coercion rather than
+	// claiming the operator asked for "none".
+	if d.managedMetaPrefix != "" {
+		if v, ok := c.job.Meta[d.policyMetaKey()]; ok && !ValidUpdatePolicy(v) {
+			return fmt.Sprintf("not applied: %s is set to %q in the job's HCL meta, which is not a valid update policy, so it is treated as %q and never applies drift for this job. Set %s to \"image-only\" or \"full\" to enable applies.", d.policyMetaKey(), v, UpdatePolicyNone, d.policyMetaKey())
+		}
+	}
 	src := d.policySource(c.job.Meta)
 	switch policy {
 	case UpdatePolicyNone:
