@@ -3,7 +3,7 @@ module github.com/gerrowadat/nomad-gitops
 go 1.25.12
 
 require (
-	github.com/go-git/go-billy/v5 v5.9.0
+	github.com/go-git/go-billy/v5 v5.9.1
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/go-playground/webhooks/v6 v6.4.0
 	github.com/hashicorp/nomad/api v0.0.0-20260306161221-000e1028d589
