@@ -570,7 +570,7 @@ func gatherJobDriftSince(t *testing.T, reg prometheus.Gatherer, job, diffType st
 			for _, lp := range m.GetLabel() {
 				labels[lp.GetName()] = lp.GetValue()
 			}
-			if labels["job"] == job && labels["diff_type"] == diffType {
+			if labels["nomad_job"] == job && labels["diff_type"] == diffType {
 				return m.GetGauge().GetValue()
 			}
 		}

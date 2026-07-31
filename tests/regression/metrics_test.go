@@ -36,7 +36,7 @@ func TestMetrics_AllExpectedMetricsPresent(t *testing.T) {
 		"nomad_gitops_api_errors_total",
 		"nomad_gitops_last_check_timestamp_seconds",
 		// nomad_gitops_job_diffs and nomad_gitops_job_drift_first_seen_timestamp_seconds
-		// have a dynamic "job" label and only appear after a Check call produces drift.
+		// have a dynamic "nomad_job" label and only appear after a Check call produces drift.
 		// They are exercised by TestMetrics_DiffCountersReflectState and
 		// TestMetrics_FirstSeenTimestamps.
 		"nomad_gitops_drifted_jobs",

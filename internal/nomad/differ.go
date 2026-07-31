@@ -410,7 +410,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		jobDiffs: f.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "nomad_gitops_job_diffs",
 			Help: "1 for each job/diff-type combination currently detected.",
-		}, []string{"job", "diff_type"}),
+		}, []string{"nomad_job", "diff_type"}),
 		driftedJobs: f.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "nomad_gitops_drifted_jobs",
 			Help: "Number of jobs currently in each drift state.",
@@ -418,15 +418,15 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		jobDriftSince: f.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "nomad_gitops_job_drift_first_seen_timestamp_seconds",
 			Help: "Unix timestamp when drift was first detected for each job. Cleared when drift resolves. Use time()-metric to get seconds in drift state.",
-		}, []string{"job", "diff_type"}),
+		}, []string{"nomad_job", "diff_type"}),
 		updatesBlockedByPolicy: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_updates_blocked_by_policy_total",
 			Help: "Detected diffs that would have produced a JobUpdate but were filtered out by the effective update policy.",
-		}, []string{"job", "policy"}),
+		}, []string{"nomad_job", "policy"}),
 		updatesBlockedCreationDisabled: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_updates_blocked_creation_disabled_total",
 			Help: "First-time registrations blocked because --enable-job-creation is off.",
-		}, []string{"job"}),
+		}, []string{"nomad_job"}),
 		jobUpdatesTotal: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_job_updates_total",
 			Help: "JobUpdates reaching a terminal state, by operation and status.",
@@ -438,35 +438,35 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		metaKeyIssues: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_meta_key_issues_total",
 			Help: "Job meta keys under the managed prefix that nomad-gitops cannot act on, by issue (unknown_key, invalid_value). Counted every check cycle the issue persists.",
-		}, []string{"job", "issue"}),
+		}, []string{"nomad_job", "issue"}),
 		metaKeyChanges: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_meta_key_changes_total",
 			Help: "Transitions of managed-prefix meta keys (added, removed, changed) noticed between check cycles, by source (hcl or nomad).",
-		}, []string{"job", "source"}),
+		}, []string{"nomad_job", "source"}),
 		metaOnlyDiffs: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_meta_only_diffs_total",
 			Help: "Diffs confined to nomad-gitops's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (see --count-meta-only-changes, --apply-meta-only-changes); they converge on the next real update.",
-		}, []string{"job"}),
+		}, []string{"nomad_job"}),
 		updatesBlockedExistingDrift: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_updates_blocked_preexisting_total",
 			Help: "Updates not enqueued because the drift pre-dated a scope change that brought it in: the job's opt-in (managed tag added) or a policy widening (e.g. image-only to full). Enable with --apply-existing-drift.",
-		}, []string{"job"}),
+		}, []string{"nomad_job"}),
 		jobsLeftManagement: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_jobs_left_management_total",
 			Help: "Managed jobs that left GitOps management, by reason: tag_removed (gitops_managed dropped from HCL) or removed_from_repo (HCL file deleted or job renamed). Logged once per transition.",
-		}, []string{"job", "reason"}),
+		}, []string{"nomad_job", "reason"}),
 		updatesBlockedKnownFailed: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_updates_blocked_known_failed_total",
 			Help: "Registrations withheld by the flap-loop guard because the HCL spec matches a recent Nomad job version whose deployment failed. The signal that a job is stuck on a known-bad commit awaiting a fix in Git.",
-		}, []string{"job"}),
+		}, []string{"nomad_job"}),
 		rollbacks: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_rollbacks_total",
 			Help: "Active rollback outcomes for deployment-producing jobs without auto_revert, by result: queued (a revert was enqueued), deferred_auto_revert (stood down because the job's update stanza sets auto_revert), no_stable_version (no stable version to revert to).",
-		}, []string{"job", "result"}),
+		}, []string{"nomad_job", "result"}),
 		failedVersionsTagged: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_failed_versions_tagged_total",
 			Help: "Failed job versions tagged in Nomad by the flap-guard tag mode (--flap-guard=tag) so the block survives version GC.",
-		}, []string{"job"}),
+		}, []string{"nomad_job"}),
 		nomadTokenRefreshes: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "nomad_gitops_token_refreshes_total",
 			Help: "Re-reads of the Nomad token file (--nomad-token-file), by result: rotated (the token changed and was applied), error (the file could not be read; previous token kept).",
