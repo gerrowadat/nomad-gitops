@@ -52,6 +52,30 @@ type VersionRecord struct {
 var TestedVersions = []VersionRecord{
 	{
 		NomadVersion:  "2.0.4",
+		GitopsRelease: "v1.1.0",
+		TestedAt:      time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.11.3",
+		GitopsRelease: "v1.1.0",
+		TestedAt:      time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.10.5",
+		GitopsRelease: "v1.1.0",
+		TestedAt:      time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "1.9.7",
+		GitopsRelease: "v1.1.0",
+		TestedAt:      time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+	},
+	{
+		NomadVersion:  "2.0.4",
 		GitopsRelease: "v1.0.2",
 		TestedAt:      time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
 		Passed:        true,

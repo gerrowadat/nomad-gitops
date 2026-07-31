@@ -5,6 +5,56 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
+## v1.1.0 — 2026-07-31
+
+A small feature and dependency release. All changes are backward compatible;
+defaults are unchanged. The minor bump reflects the two additive features (the
+`apply_detail` diff field and the `--reclone-interval` flag). Verified against
+Nomad 1.9.7, 1.10.5, 1.11.3, and 2.0.4 (full regression suite).
+
+### Changed
+
+- **`/diffs` and the JSON API now explain a policy-blocked diff specifically.**
+  A diff held back by the update policy previously showed only "blocked by
+  update policy". Diffs now carry an optional `apply_detail` string that names
+  the effective policy, where it came from (the job's `gitops_update_policy`
+  meta key or the `--default-update-policy` default), and what to change to
+  apply it. An unrecognised `gitops_update_policy` value — which is coerced to
+  `none` — is reported as such, showing the raw value rather than claiming the
+  operator asked for `none`. `apply_detail` appears in the `/diffs` text view
+  (in place of the generic line), in the `/api/v1/diffs` and `/healthz` JSON,
+  and in the OpenAPI spec. `apply_action` is unchanged. See
+  [Applying changes](docs/applying-changes.md#why-a-diff-is-or-is-not-applied).
+- **The example `NomadJobDrift` alert now names the drifting job.** It alerts on
+  the per-job `nomad_gitops_job_diffs` metric instead of the aggregate count, so
+  the alert labels and annotations carry the job and diff type. See
+  [`monitoring/alerts.yml`](monitoring/alerts.yml).
+
+### Added
+
+- **`--reclone-interval` / `RECLONE_INTERVAL` (default `24h`, `0` disables).**
+  The in-memory git clone is periodically discarded and re-fetched to reclaim
+  the go-git object store, which grows with commit churn over a long-running
+  process. The reclone runs from the same loop as polling, so it never overlaps
+  a pull. See [Configuration](docs/configuration.md).
+
+### Fixed
+
+- **Server shutdown goroutine leak.** `Server.Run` spawned a goroutine that
+  blocked on the context to trigger shutdown; when `ListenAndServe` failed early
+  (e.g. an unbindable address) that goroutine was left blocked. `ListenAndServe`
+  now runs in the background and `Run` selects on both it and the context, so the
+  goroutine always ends before `Run` returns.
+
+### Dependencies
+
+- Bump `golang.org/x/crypto` to v0.54.0.
+- Bump `github.com/prometheus/client_golang` to v1.24.1.
+- Bump `github.com/go-git/go-billy/v5` to v5.9.1.
+- Bump `actions/setup-go` to v7 (CI).
+- Transitive bumps: `prometheus/common` v0.70.1, `prometheus/procfs` v0.21.1,
+  `golang.org/x/net` v0.57.0, `golang.org/x/sys` v0.47.0.
+
 ## v1.0.2 — 2026-07-15
 
 A security and dependency patch. No new features and no config, meta-key, or
