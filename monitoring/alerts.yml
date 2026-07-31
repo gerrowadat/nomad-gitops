@@ -13,9 +13,12 @@ groups:
     rules:
 
       # Any drift detected, alerting per job so the offending job and diff
-      # type are named in the alert itself (via the `job` and `diff_type`
-      # labels) rather than only a count. nomad_gitops_job_diffs is 1 for each
-      # drifting (job, diff_type) and absent otherwise, so the 5m 'for' window
+      # type are named in the alert itself (via the `nomad_job` and `diff_type`
+      # labels) rather than only a count. The exporter labels the Nomad job
+      # `nomad_job`, not `job`, because Prometheus reserves `job` for the scrape
+      # target name and would otherwise rename ours to `exported_job`.
+      # nomad_gitops_job_diffs is 1 for each drifting (nomad_job, diff_type) and
+      # absent otherwise, so the 5m 'for' window
       # means "this job has been drifting for 5m" — absorbing the normal gap
       # between a git push and the next diff check, where a job transitioning
       # through a deploy looks drifted briefly. Tune to your --diff-interval /
@@ -27,10 +30,10 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Nomad job {{ $labels.job }} has drifted from git ({{ $labels.diff_type }})"
+          summary: "Nomad job {{ $labels.nomad_job }} has drifted from git ({{ $labels.diff_type }})"
           description: >
             nomad-gitops has detected drift ({{ $labels.diff_type }}) between
-            the git repo and the live Nomad cluster for job {{ $labels.job }}
+            the git repo and the live Nomad cluster for job {{ $labels.nomad_job }}
             for more than 5 minutes. Check /healthz or /diffs for details.
 
       # A specific job has been in a modified state for an extended period.
@@ -42,9 +45,9 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Nomad job {{ $labels.job }} has been modified for {{ $value | humanizeDuration }}"
+          summary: "Nomad job {{ $labels.nomad_job }} has been modified for {{ $value | humanizeDuration }}"
           description: >
-            The running definition of job {{ $labels.job }} differs from the
+            The running definition of job {{ $labels.nomad_job }} differs from the
             HCL in git and has not been reconciled for over 1 hour.
 
       # A job defined in git is absent from Nomad. Could be a failed deploy,
@@ -55,10 +58,10 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Nomad job {{ $labels.job }} is defined in git but missing from Nomad"
+          summary: "Nomad job {{ $labels.nomad_job }} is defined in git but missing from Nomad"
           description: >
-            Job {{ $labels.job }} (defined in {{ $labels.hcl_file }}) has not
-            been registered in Nomad for over 15 minutes.
+            Job {{ $labels.nomad_job }} is defined in git but has not been
+            registered in Nomad for over 15 minutes.
 
       # A job is running in Nomad with no corresponding HCL file in the repo.
       # Could be an untracked legacy job or one that was manually submitted.
@@ -68,9 +71,9 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Nomad job {{ $labels.job }} has no HCL definition in git"
+          summary: "Nomad job {{ $labels.nomad_job }} has no HCL definition in git"
           description: >
-            Job {{ $labels.job }} is running in Nomad but has no corresponding
+            Job {{ $labels.nomad_job }} is running in Nomad but has no corresponding
             HCL file in the watched git repo. It has been in this state for
             {{ $value | humanizeDuration }}.
 
