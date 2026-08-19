@@ -9,7 +9,7 @@ require (
 	github.com/hashicorp/nomad/api v0.0.0-20260306161221-000e1028d589
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.24.1
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.55.0
 )
 
 require (
