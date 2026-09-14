@@ -28,7 +28,12 @@ LABEL org.opencontainers.image.title="nomad-gitops" \
       org.opencontainers.image.source="https://github.com/gerrowadat/nomad-gitops" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-RUN apk add --no-cache ca-certificates tzdata && \
+# apk upgrade: the alpine:<minor> tag lags the package repo, so base
+# packages (openssl, musl, ...) can carry fixed CVEs that the CI image scan
+# (.github/workflows/security-scan.yml) fails on. Upgrading to the current
+# repo state picks up those fixes without waiting for a new base image.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates tzdata && \
     addgroup -S nomad-gitops && \
     adduser -S -G nomad-gitops nomad-gitops
 

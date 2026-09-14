@@ -110,7 +110,7 @@ against a real cluster.
 - **Docker** — the suite pulls and starts `hashicorp/nomad:<version>`
   automatically. The container runs with `--privileged` to allow Nomad's
   `raw_exec` driver (used by test jobs) to manage cgroups.
-- **Go 1.25+**
+- **Go 1.27+** (the version in `go.mod`; an older `go` command downloads it automatically)
 
 ### Running against a Docker-managed Nomad
 
