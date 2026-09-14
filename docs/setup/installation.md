@@ -19,7 +19,7 @@ and `linux/arm64` (Raspberry Pi 4+).
 
 ## From source
 
-Requires Go 1.25+.
+Requires Go 1.27+ (the version in `go.mod`; an older `go` command downloads it automatically).
 
 ```bash
 git clone https://github.com/gerrowadat/nomad-gitops.git
