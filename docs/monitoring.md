@@ -144,7 +144,7 @@ configuration files:
 |------|----------|
 | [`monitoring/prometheus.yml`](../monitoring/prometheus.yml) | Scrape configuration for nomad-gitops |
 | [`monitoring/recording_rules.yml`](../monitoring/recording_rules.yml) | Pre-aggregated series for dashboards and alerts |
-| [`monitoring/alerts.yml`](../monitoring/alerts.yml) | Alerting rules covering drift, service health, git, and webhooks |
+| [`monitoring/alerts.yml`](../monitoring/alerts.yml) | Alerting rules covering drift, service health, git, webhooks, and the apply queue |
 
 The alerts cover:
 
@@ -158,3 +158,4 @@ The alerts cover:
 - **NomadGitopsAPIErrors** — Nomad API calls are failing
 - **NomadGitopsDown** — Prometheus cannot reach the `/metrics` endpoint
 - **NomadGitopsWebhookErrors** — webhook deliveries are consistently failing
+- **NomadGitopsUpdatesNotDraining** — updates have been queued but unapplied for over 15 minutes, meaning the apply loop is stuck rather than busy
