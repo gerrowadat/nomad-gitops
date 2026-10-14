@@ -166,3 +166,24 @@ groups:
             Webhook events have been failing for 10 minutes. The service
             will fall back to --poll-interval-based checks. Check logs for
             signature verification or parse errors.
+
+  - name: nomad_gitops_apply
+    rules:
+
+      # The update queue is not draining. Detected drift becomes a queued
+      # JobUpdate that a separate apply loop drains, normally within one
+      # --apply-interval (default 10s), so anything still pending after 15
+      # minutes means the applier is stuck rather than busy. Raise the
+      # threshold if you run a long --apply-interval.
+      - alert: NomadGitopsUpdatesNotDraining
+        expr: nomad_gitops_job_updates_pending > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nomad-gitops has {{ $value }} update(s) pending for over 15 minutes"
+          description: >
+            The update queue is not draining. Check /api/v1/updates for the
+            stuck updates and the logs for an apply that is failing or
+            hanging. Note this fires on the pending count, so a queue that
+            keeps churning without emptying holds the alert open.
