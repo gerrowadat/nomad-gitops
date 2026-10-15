@@ -97,6 +97,13 @@ knows nothing about (`missing_from_hcl` detection). Do not reintroduce a
 flag that inverts any of this; `--managed-meta-hcl-canonical` was removed
 deliberately.
 
+Stated precisely, as the freeze mechanism required: *Git is the only input
+that can **grant** nomad-gitops authority to write to a job; other inputs may
+withhold it, never extend it.* Every gate obeys this — the policy flags, the
+flap-loop guard, and freezes — so a deny-only mechanism such as a freeze is
+allowed to live outside Git, while anything that would *select* a job or
+*widen* a policy is not. See `docs/design/temporary-freeze.md`.
+
 **Separate the two uses of job meta.** The `gitops_managed` flag is set by
 humans in HCL and read by the tool — that is fine. Writing tool state (applied
 commit, timestamps, status) back into the live job's meta is a different thing
@@ -174,8 +181,10 @@ Use these terms consistently so the code and docs match:
 |---|---|
 | `JobDiff` | An observation: detected drift between Git and Nomad. |
 | `JobUpdate` | An intended transition: a planned change to apply to Nomad. Lives in the in-memory `UpdateQueue`; visible at `GET /api/v1/updates`. |
-| `JobUpdateOperation` | `REGISTER` or `DEREGISTER` |
-| `JobUpdateStatus` | `PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED` |
+| `JobUpdateOperation` | `REGISTER`, `DEREGISTER` or `REVERT` |
+| `JobUpdateStatus` | `PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED`, `HELD` |
+| `HELD` | Terminal update status: a freeze was in force when the update reached the front of the queue. Not a failure — it does not feed the flap guard; the next cycle after the thaw re-derives the intent. |
+| freeze | A temporary, operator-set hold on nomad-gitops's write authority for one job, stored in Nomad Variables (never in Git, never in the process). Holds `REGISTER`, `DEREGISTER` and `REVERT`; never affects detection or reporting. |
 | opt-in key | `gitops_managed = "true"` in job HCL meta — scope selector, never written by the tool |
 | meta-drift | The problem of tool-written meta keys being clobbered by the next human `nomad job run` |
 | `CheckpointStore` | Interface for persisting update queue state across restarts |

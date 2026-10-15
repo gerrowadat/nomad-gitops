@@ -89,6 +89,7 @@ The full docs live in [`docs/`](docs/README.md):
   [configuration](docs/configuration.md),
   [meta-key reference](docs/meta-keys.md), [job selection](docs/job-selection.md),
   [applying changes](docs/applying-changes.md), [rollback](docs/rollback.md),
+  [freezing a job](docs/freezing.md),
   [monitoring](docs/monitoring.md), [JSON API](docs/json-api.md).
 - **Understanding it** — [FAQ & gotchas](docs/faq.md),
   [design philosophy](docs/philosophy.md), [prior art](docs/prior-art.md),

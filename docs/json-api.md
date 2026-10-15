@@ -30,6 +30,9 @@ authentication.
 | GET | `/api/v1/status` | Git watcher status (last commit, last fetch time) | 503 until git clone completes |
 | GET | `/api/v1/version` | Build version, commit hash, build date | Always available |
 | POST | `/api/v1/refresh` | `{"message":"refresh triggered"}` | Triggers immediate git pull |
+| GET | `/api/v1/freezes` | Current [freeze](freezing.md) records + freeze-store health | Always available |
+| POST | `/api/v1/freezes/{job}` | Place or replace a freeze; returns the stored record | Requires `--enable-freeze-api`; **501** without it |
+| DELETE | `/api/v1/freezes/{job}` | Thaw a job | Requires `--enable-freeze-api`; **501** without it |
 | GET | `/api/openapi.json` | OpenAPI 3.0 spec (JSON) | No authentication required |
 
 ## curl examples
@@ -52,7 +55,61 @@ curl -s -H "Authorization: Bearer $KEY" $BASE/api/v1/version | jq .
 
 # Trigger an immediate refresh
 curl -s -X POST -H "Authorization: Bearer $KEY" $BASE/api/v1/refresh | jq .
+
+# Current freezes (always readable)
+curl -s -H "Authorization: Bearer $KEY" $BASE/api/v1/freezes | jq .
+
+# Freeze a job for four hours (needs --enable-freeze-api)
+curl -s -X POST -H "Authorization: Bearer $KEY" \
+  -d '{"reason":"INC-4412: fixing the migration by hand","frozen_by":"doc","expires_in":"4h"}' \
+  $BASE/api/v1/freezes/api-server | jq .
+
+# Thaw it
+curl -s -X DELETE -H "Authorization: Bearer $KEY" $BASE/api/v1/freezes/api-server | jq .
 ```
+
+## Freezes
+
+`GET /api/v1/freezes` returns every record, including expired and malformed
+ones, plus whether the store is readable at all:
+
+```json
+{
+  "freezes": [
+    {
+      "job_id": "api-server",
+      "variable_path": "nomad/jobs/gitops/freezes/api-server",
+      "reason": "INC-4412: fixing the migration by hand",
+      "frozen_by": "doc",
+      "frozen_at": "2026-10-15T09:12:04Z",
+      "expires_at": "2026-10-15T18:00:00Z",
+      "state": "active"
+    },
+    {
+      "job_id": "batch-reindex",
+      "variable_path": "nomad/jobs/gitops/freezes/batch-reindex",
+      "reason": "waiting on the new index schema",
+      "frozen_at": "2026-09-02T11:40:00Z",
+      "state": "indefinite"
+    }
+  ],
+  "store_last_read": "2026-10-15T09:40:02Z",
+  "store_healthy": true
+}
+```
+
+`state` is `active`, `indefinite`, `expired` or `malformed` (see
+[Freezing a job](freezing.md#record-states)). A `store_healthy` of `false`
+means nomad-gitops cannot read the freeze store and is withholding every apply
+fail-closed.
+
+The write endpoints are gated by `--enable-freeze-api` on top of the API key —
+they are the only endpoints that change cluster-visible state. `POST` takes
+`{reason, frozen_by?, expires_in?|expires_at?}`; `reason` is required (**400**
+without one), `expires_in` is a Go duration and `expires_at` an RFC3339
+instant, and giving neither means `--freeze-default-ttl` (indefinite by
+default). A write that loses a check-and-set race is retried once, then returns
+**409**.
 
 Example `/api/v1/diffs` response when drift is detected:
 
@@ -72,6 +129,14 @@ Example `/api/v1/diffs` response when drift is detected:
       "diff_type": "missing_from_hcl",
       "detail": "job is running in Nomad (status: running) but has no HCL definition in the repo",
       "apply_action": "observation_only"
+    },
+    {
+      "job_id": "batch-reindex",
+      "hcl_file": "jobs/batch-reindex.hcl",
+      "diff_type": "modified",
+      "detail": "Nomad plan shows diff type \"Edited\"",
+      "apply_action": "blocked_frozen",
+      "apply_detail": "not applied: frozen until 2026-10-15T18:00:00Z (7h21m0s from now): INC-4412: fixing the migration by hand"
     }
   ],
   "last_check_time": "2026-05-08T12:00:00Z",

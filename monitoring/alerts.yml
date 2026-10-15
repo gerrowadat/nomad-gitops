@@ -187,3 +187,111 @@ groups:
             stuck updates and the logs for an apply that is failing or
             hanging. Note this fires on the pending count, so a queue that
             keeps churning without emptying holds the alert open.
+
+  - name: nomad_gitops_freeze
+    rules:
+
+      # A freeze is a temporary, operator-set hold on applying changes to one
+      # job, stored in Nomad Variables (see docs/freezing.md).
+      #
+      # Note the drift alerts above are deliberately NOT suppressed for a
+      # frozen job: you froze it *because* it is drifting and you do not want
+      # that reconciled yet, so the drift stays visible. A mechanism that
+      # silences alerts as a side effect of an incident action is how drift
+      # gets forgotten. For quiet during a known incident, take an
+      # Alertmanager silence on the nomad_job label — explicit, time-boxed,
+      # and audited by Alertmanager. Please do not "fix" this by joining the
+      # drift alerts against nomad_gitops_job_frozen.
+
+      # Frozen for over a day. Either it was forgotten, or the hold is really
+      # a decision and belongs in Git.
+      - alert: NomadGitopsJobFrozen
+        expr: nomad_gitops:job_freeze_age_seconds > 86400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nomad job {{ $labels.nomad_job }} has been frozen for {{ $value | humanizeDuration }}"
+          description: >
+            nomad-gitops has been withholding writes to job
+            {{ $labels.nomad_job }} for over a day because of a freeze record.
+            Check /api/v1/freezes for the reason. If the hold is permanent,
+            express it in Git with gitops_update_policy = "none" instead.
+
+      # A freeze with no expiry. Permitted, but it will never lift on its own,
+      # so it is reported from an hour in rather than a day.
+      - alert: NomadGitopsJobFrozenIndefinite
+        expr: nomad_gitops:job_frozen_indefinite > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nomad job {{ $labels.nomad_job }} is frozen with no expiry"
+          description: >
+            The freeze on job {{ $labels.nomad_job }} has no expires_at, so
+            nomad-gitops will withhold writes to it until someone purges the
+            record. Set an expiry, purge it, or move the decision into Git.
+
+      # An expired record left lying around. It suppresses nothing — the job
+      # reconciles normally again — but it misleads anyone reading the
+      # Variables, and somebody meant to come back to it.
+      - alert: NomadGitopsFreezeExpired
+        expr: nomad_gitops_freeze_records{state="expired"} > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} expired nomad-gitops freeze record(s) left in place"
+          description: >
+            One or more freeze records have passed their expires_at but are
+            still present. The affected jobs are reconciling normally again.
+            Purge the records (nomad var purge) or set
+            --freeze-expired-retention to have them cleaned up.
+
+      # A record nomad-gitops cannot make sense of. Read conservatively as an
+      # indefinite freeze on the job it appears to name, so this is blocking
+      # writes.
+      - alert: NomadGitopsFreezeMalformed
+        expr: nomad_gitops_freeze_records{state="malformed"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} malformed nomad-gitops freeze record(s)"
+          description: >
+            A freeze record is missing a reason, has an unparseable
+            expires_at, has a job item that disagrees with its path, or could
+            not be read. nomad-gitops reads these as an indefinite freeze, so
+            writes to the named job are being withheld. Fix or purge them.
+
+      # The freeze store is unreachable. Usually a Variables ACL problem.
+      - alert: NomadGitopsFreezeStoreErrors
+        expr: nomad_gitops:freeze_store_error_rate5m > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nomad-gitops cannot reach the freeze store (op={{ $labels.op }})"
+          description: >
+            Nomad Variables {{ $labels.op }} operations against the freeze
+            prefix have been failing for 10 minutes. Usually an ACL policy
+            problem. If the store has never been readable, no freeze is being
+            honoured at all (applies are deliberately not held in that state);
+            if it worked and then stopped, applies are held once the view
+            passes --freeze-max-staleness. Either way drift detection is
+            unaffected. Check store_healthy on /api/v1/freezes.
+
+      # The cached freeze view has gone stale, so every apply is held.
+      # Threshold must exceed --freeze-max-staleness (default 5m).
+      - alert: NomadGitopsFreezeViewStale
+        expr: nomad_gitops:seconds_since_freeze_store_read > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "nomad-gitops freeze view is {{ $value | humanizeDuration }} stale — all applies held"
+          description: >
+            nomad-gitops has not read the freeze store within
+            --freeze-max-staleness and is therefore withholding every apply
+            (fail-closed). Drift is still detected and reported. Fix the
+            Variables ACL or set --freeze-fail-open to take the other trade.

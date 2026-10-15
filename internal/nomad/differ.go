@@ -116,6 +116,10 @@ const (
 	// so re-applying it would re-enter a known failure. Released when Git moves
 	// to a spec that has not failed.
 	ApplyActionKnownFailed ApplyAction = "blocked_known_failed"
+	// ApplyActionFrozen means an operator-set freeze is withholding the write
+	// (or the freeze view is too stale to write against). Drift is still
+	// detected and reported; only the write is held. See freeze.go.
+	ApplyActionFrozen ApplyAction = "blocked_frozen"
 )
 
 // Describe returns a human-readable explanation for display.
@@ -141,6 +145,8 @@ func (a ApplyAction) Describe() string {
 		return "no actionable change (autoscaler-owned)"
 	case ApplyActionKnownFailed:
 		return "not applied: this spec matches a recent failed deployment (flap-loop guard); waiting for a fix in Git"
+	case ApplyActionFrozen:
+		return "not applied: the job is frozen (a temporary operator-set hold); thaw it to resume"
 	default:
 		return string(a)
 	}
@@ -266,6 +272,34 @@ type Differ struct {
 	updateQueue   *UpdateQueue
 	applyCh       chan struct{}
 
+	// Freeze support: operator-set temporary holds on this tool's write
+	// authority, stored in Nomad Variables (see freeze.go). freezeStore is nil
+	// when the feature is disabled (empty --freeze-variable-prefix), in which
+	// case none of the rest of this is consulted. All of it is guarded by
+	// freezeMu, kept separate from mu so a freeze read never contends with the
+	// diff state.
+	freezeMu    sync.RWMutex
+	freezeStore FreezeStore
+	freezes     freezeView
+	// freezeHeldSince is the time each currently-frozen job was last seen
+	// frozen, and freezeAccrued the total time it has spent frozen. Together
+	// they let a freeze hold an orphan's deregister grace period rather than
+	// spend it (graceOffset).
+	freezeHeldSince map[string]time.Time
+	freezeAccrued   map[string]time.Duration
+	// freezeMaxStaleness is how stale the cached freeze view may be before
+	// every apply is held; freezeFailOpen inverts that to proceed as if
+	// nothing were frozen; freezeExpiredRetention optionally purges records
+	// that have been expired at least that long; freezeDefaultTTL is applied
+	// to a freeze created through the API with no explicit expiry.
+	freezeMaxStaleness     time.Duration
+	freezeFailOpen         bool
+	freezeExpiredRetention time.Duration
+	freezeDefaultTTL       time.Duration
+	// freezeUnreadableLogged dedups the "never readable" ERROR so a missing
+	// ACL policy is obvious without one line per cycle.
+	freezeUnreadableLogged sync.Once
+
 	// metaIssuesLogged dedups meta-key issue log lines: each unique
 	// (job, key, value, issue) is logged once per process. The counter
 	// metric is not deduped.
@@ -319,6 +353,16 @@ type Differ struct {
 	failedVersionsTagged           *prometheus.CounterVec
 	nomadTokenRefreshes            *prometheus.CounterVec
 	nomadLogins                    *prometheus.CounterVec
+
+	jobFrozen           *prometheus.GaugeVec
+	frozenJobs          prometheus.Gauge
+	jobFreezeCreated    *prometheus.GaugeVec
+	jobFreezeExpires    *prometheus.GaugeVec
+	freezeRecords       *prometheus.GaugeVec
+	freezeStoreLastRead prometheus.Gauge
+	freezeStoreErrors   *prometheus.CounterVec
+	appliesHeldByFreeze *prometheus.CounterVec
+	oldestPendingAge    prometheus.Gauge
 }
 
 // newDifferBase constructs a Differ from config with metrics registered into reg.
@@ -371,6 +415,13 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 		updateQueue:          NewUpdateQueue(),
 		applyCh:              make(chan struct{}, 1),
 		driftFirstSeen:       make(map[string]time.Time),
+
+		freezeHeldSince:        make(map[string]time.Time),
+		freezeAccrued:          make(map[string]time.Duration),
+		freezeMaxStaleness:     cfg.FreezeMaxStaleness,
+		freezeFailOpen:         cfg.FreezeFailOpen,
+		freezeExpiredRetention: cfg.FreezeExpiredRetention,
+		freezeDefaultTTL:       cfg.FreezeDefaultTTL,
 		hclParseErrors: f.NewCounter(prometheus.CounterOpts{
 			Name: "nomad_gitops_hcl_parse_errors_total",
 			Help: "Total number of HCL files that failed to parse as Nomad job definitions.",
@@ -475,6 +526,42 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 			Name: "nomad_gitops_logins_total",
 			Help: "Workload-identity token exchanges via /v1/acl/login (--nomad-login-auth-method), by result: success (a fresh ACL token was obtained and applied) or error (the exchange failed; previous token kept).",
 		}, []string{"result"}),
+		jobFrozen: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "nomad_gitops_job_frozen",
+			Help: "1 for each job with a freeze currently in force (writes withheld by a temporary operator-set hold); absent otherwise. An expired record is not in force and does not appear here.",
+		}, []string{"nomad_job"}),
+		frozenJobs: f.NewGauge(prometheus.GaugeOpts{
+			Name: "nomad_gitops_frozen_jobs",
+			Help: "Number of jobs whose writes are currently withheld by a freeze. The single \"is anything paused?\" signal.",
+		}),
+		jobFreezeCreated: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "nomad_gitops_job_freeze_created_timestamp_seconds",
+			Help: "Unix timestamp the freeze record was created (the Nomad Variable's CreateTime). time() - metric is how long the job has been frozen.",
+		}, []string{"nomad_job"}),
+		jobFreezeExpires: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "nomad_gitops_job_freeze_expires_timestamp_seconds",
+			Help: "Unix timestamp a freeze expires. Deliberately absent for an indefinite freeze (no expires_at), so indefinite freezes are queryable as nomad_gitops_job_frozen unless on(nomad_job) this metric.",
+		}, []string{"nomad_job"}),
+		freezeRecords: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "nomad_gitops_freeze_records",
+			Help: "Freeze records in the store by state: active (expiry in the future), indefinite (no expiry set), expired (past its expiry, suppressing nothing, left in place), malformed (unparseable or unreadable, read conservatively as an indefinite freeze).",
+		}, []string{"state"}),
+		freezeStoreLastRead: f.NewGauge(prometheus.GaugeOpts{
+			Name: "nomad_gitops_freeze_store_last_read_timestamp_seconds",
+			Help: "Unix timestamp of the last successful read of the freeze store. Once this is older than --freeze-max-staleness, applies are held (unless --freeze-fail-open).",
+		}),
+		freezeStoreErrors: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_gitops_freeze_store_errors_total",
+			Help: "Errors talking to the freeze store (Nomad Variables), by operation: list, read, write, delete. Usually an ACL policy problem.",
+		}, []string{"op"}),
+		appliesHeldByFreeze: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "nomad_gitops_applies_held_by_freeze_total",
+			Help: "Writes withheld because the job was frozen (or the freeze view was too stale to write against), by operation: REGISTER, DEREGISTER, REVERT.",
+		}, []string{"operation"}),
+		oldestPendingAge: f.NewGauge(prometheus.GaugeOpts{
+			Name: "nomad_gitops_oldest_pending_update_age_seconds",
+			Help: "Age of the oldest update still waiting to be applied (PENDING or IN_PROGRESS); 0 when nothing is waiting. The signal that the apply loop is stuck rather than busy.",
+		}),
 	}
 
 	// Pre-populate Vec metrics for all finite label values so they appear in
@@ -485,7 +572,7 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	for _, op := range []string{"list", "info", "plan", "register", "deregister", "versions", "deployments", "deployment", "revert", "tag"} {
 		d.nomadAPIErrors.WithLabelValues(op)
 	}
-	for _, st := range []JobUpdateStatus{JobUpdateStatusSucceeded, JobUpdateStatusFailed, JobUpdateStatusSuperseded} {
+	for _, st := range []JobUpdateStatus{JobUpdateStatusSucceeded, JobUpdateStatusFailed, JobUpdateStatusSuperseded, JobUpdateStatusHeld} {
 		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationRegister), string(st))
 		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationDeregister), string(st))
 		d.jobUpdatesTotal.WithLabelValues(string(JobUpdateOperationRevert), string(st))
@@ -498,6 +585,15 @@ func newDifferBase(jobs NomadJobsClient, cfg *config.Config, reg prometheus.Regi
 	}
 	for _, r := range []string{"success", "error"} {
 		d.nomadLogins.WithLabelValues(r)
+	}
+	for _, st := range freezeStates {
+		d.freezeRecords.WithLabelValues(string(st))
+	}
+	for _, op := range []string{"list", "read", "write", "delete"} {
+		d.freezeStoreErrors.WithLabelValues(op)
+	}
+	for _, op := range []JobUpdateOperation{JobUpdateOperationRegister, JobUpdateOperationDeregister, JobUpdateOperationRevert} {
+		d.appliesHeldByFreeze.WithLabelValues(string(op))
 	}
 
 	return d
@@ -539,6 +635,24 @@ func NewDifferWithRegistry(cfg *config.Config, reg prometheus.Registerer) (*Diff
 	d := newDifferBase(client.Jobs(), cfg, reg)
 	d.nomadClient = client
 	d.tokenPollInterval = cfg.NomadTokenPollInterval
+
+	// Freeze support reads (and, with --enable-freeze-api, writes) Nomad
+	// Variables. It needs an explicit ACL policy: a workload identity's
+	// implicit Variable access covers only nomad/jobs/<job>/<group>/<task>,
+	// which the freeze prefix does not match. See docs/setup/nomad-access.md.
+	if prefix := strings.Trim(cfg.FreezeVariablePrefix, "/"); prefix != "" {
+		d.freezeStore = newNomadVariableFreezeStore(client, prefix, cfg.NomadNamespace, func(op string) {
+			d.freezeStoreErrors.WithLabelValues(op).Inc()
+		})
+		mode := "read-only"
+		if cfg.EnableFreezeAPI {
+			mode = "read-write (--enable-freeze-api)"
+		}
+		slog.Info("Freeze support enabled", "variable_prefix", prefix, "mode", mode,
+			"max_staleness", cfg.FreezeMaxStaleness, "fail_open", cfg.FreezeFailOpen)
+	} else {
+		slog.Info("Freeze support disabled (--freeze-variable-prefix is empty)")
+	}
 
 	if loginMode {
 		d.loginAuthMethod = cfg.NomadLoginAuthMethod
@@ -949,8 +1063,12 @@ func (d *Differ) commitResults(diffs []JobDiff, selReasons map[string]SelectionR
 	if listMeta != nil {
 		d.lastNomadIndex = listMeta.LastIndex
 	}
+	var noLongerOrphaned []string
 	for k := range d.driftFirstSeen {
 		if _, ok := currentKeys[k]; !ok {
+			if jobID, isOrphan := orphanJobFromDriftKey(k); isOrphan {
+				noLongerOrphaned = append(noLongerOrphaned, jobID)
+			}
 			delete(d.driftFirstSeen, k)
 		}
 	}
@@ -964,6 +1082,12 @@ func (d *Differ) commitResults(diffs []JobDiff, selReasons map[string]SelectionR
 		firstSeenSnapshot[k] = v
 	}
 	d.mu.Unlock()
+
+	// A job that is no longer orphaned starts any future grace period clean,
+	// so drop the frozen-time it accrued while it was.
+	for _, jobID := range noLongerOrphaned {
+		d.clearFreezeAccrual(jobID)
+	}
 
 	d.lastCheck.Set(float64(now.Unix()))
 	d.jobDiffs.Reset()
@@ -996,6 +1120,14 @@ func (d *Differ) Check(hclFiles map[string]string, commit string) error {
 		Params:    map[string]string{"meta": "true"},
 	}
 	wq := &nomadapi.WriteOptions{Namespace: d.namespace}
+
+	// Refresh the freeze view before anything else, including before the
+	// Raft-index skip below. A Variable write does not move the jobs table's
+	// index, so a freeze set during a quiet period would otherwise go
+	// unreported until something else changed. Cheap: one list call against a
+	// prefix that is normally empty.
+	d.refreshFreezes(context.Background())
+	d.purgeExpiredFreezes(context.Background())
 
 	// List all Nomad jobs first. The returned Raft index lets us skip the
 	// expensive per-job work when neither Nomad state nor the git commit has
@@ -1371,6 +1503,12 @@ func (d *Differ) decideDeregisterAction(c *updateCandidate) ApplyAction {
 		c.actionDetail = fmt.Sprintf("not applied: deregistration requires update policy \"full\", but this job's effective policy is %q. A job removed from the repo is only deregistered under a full policy.", c.policy)
 		return ApplyActionPolicyBlocked
 	}
+	if blocked, why := d.freezeBlocks(c.jobID); blocked {
+		slog.Info("Freeze: holding deregister", "job", c.jobID, "reason", why)
+		d.appliesHeldByFreeze.WithLabelValues(string(JobUpdateOperationDeregister)).Inc()
+		c.actionDetail = why
+		return ApplyActionFrozen
+	}
 	if !d.orphanGraceElapsed(c.jobID) {
 		return ApplyActionDeregisterGrace
 	}
@@ -1385,7 +1523,12 @@ func (d *Differ) orphanGraceElapsed(jobID string) bool {
 	d.mu.RLock()
 	t, ok := d.driftFirstSeen[driftKey(jobID, string(DiffTypeMissingFromHCL))]
 	d.mu.RUnlock()
-	return ok && time.Since(t) >= d.deregisterGrace
+	if !ok {
+		return false
+	}
+	// Time spent frozen does not count towards the grace period: freezing an
+	// orphaned job mid-rename buys time without spending it.
+	return time.Since(t)-d.graceOffset(jobID) >= d.deregisterGrace
 }
 
 // decideApplyAction determines a candidate's disposition and records the
@@ -1440,6 +1583,17 @@ func (d *Differ) decideApplyAction(c *updateCandidate, commit string, q *nomadap
 		slog.Info("Job creation blocked: --enable-job-creation is off", "job", c.jobID)
 		d.updatesBlockedCreationDisabled.WithLabelValues(c.jobID).Inc()
 		return ApplyActionCreationBlocked
+	}
+
+	// Freeze: a temporary operator-set hold. Checked here, after the gates
+	// that mean we were never going to write anyway, so the reported reason is
+	// the freeze only when the freeze is the actual reason — and before the
+	// flap guard, whose check costs a Nomad API call.
+	if blocked, why := d.freezeBlocks(c.jobID); blocked {
+		slog.Info("Freeze: holding register", "job", c.jobID, "reason", why)
+		d.appliesHeldByFreeze.WithLabelValues(string(JobUpdateOperationRegister)).Inc()
+		c.actionDetail = why
+		return ApplyActionFrozen
 	}
 
 	// Flap-loop guard: hold a re-apply of a spec that a recent deployment
@@ -1500,6 +1654,16 @@ func (d *Differ) ForceCheck(hclFiles map[string]string, commit string) error {
 }
 
 // driftKey returns a map key for a (jobID, diffType) pair.
+// orphanJobFromDriftKey reverses driftKey for missing_from_hcl entries,
+// returning the job ID and whether the key was an orphan key at all.
+func orphanJobFromDriftKey(key string) (string, bool) {
+	suffix := "\x00" + string(DiffTypeMissingFromHCL)
+	if !strings.HasSuffix(key, suffix) {
+		return "", false
+	}
+	return strings.TrimSuffix(key, suffix), true
+}
+
 func driftKey(jobID, diffType string) string {
 	return jobID + "\x00" + diffType
 }

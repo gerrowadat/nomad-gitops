@@ -150,8 +150,16 @@ it from Git and Nomad, which together hold all durable truth. The queue is
 visible at `GET /api/v1/updates`.
 
 Each update carries a stable ID (`<job_id>/<short_commit>`), the operation,
-status (`PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED`), the
-policy that allowed it, and the CAS token used.
+status (`PENDING`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `SUPERSEDED`, `HELD`),
+the policy that allowed it, and the CAS token used.
+
+`HELD` means a [freeze](freezing.md) was in force when the update reached the
+front of the queue — a freeze that landed in the window between detection and
+apply. Like `FAILED` it is terminal: intent is cheap to recompute and expensive
+to remember, so the next diff cycle after the thaw derives the same update
+again. It is not a failure, so it does not feed the flap-loop guard. A job
+already frozen when the drift is detected produces no update at all; its diff
+reports `blocked_frozen` instead.
 
 The design background is in [`design/gitops-job-updates.md`](design/gitops-job-updates.md)
 and [`design/update-policies.md`](design/update-policies.md).
@@ -185,6 +193,11 @@ but only under all of these guards:
   exist and still carry the tag, or the deregistration is abandoned ("recheck,
   don't remember").
 
+A [frozen](freezing.md) job is never deregistered, and its grace period is
+**held rather than spent**: a job four minutes into a five-minute grace when it
+was frozen is still four minutes in when thawed. That is the mid-rename case the
+freeze is for.
+
 Deregistration is a **graceful stop** by default (the job becomes `dead` but
 stays queryable and is garbage-collected by Nomad later); `--deregister-purge`
 removes it from Nomad's state immediately. Jobs leaving management are counted in
@@ -210,6 +223,7 @@ in the OpenAPI spec. Values:
 | `deregister_pending_grace` | Removed from the repo; deregistration is waiting out `--deregister-grace`. |
 | `no_actionable_change` | The only diff is autoscaler-owned Count/Scaling churn. |
 | `blocked_known_failed` | The flap-loop guard is holding the apply: this spec matches a recent deployment that failed. Released when Git moves to a spec that has not failed. See [Rollback](rollback.md). |
+| `blocked_frozen` | A [freeze](freezing.md) is withholding the write — a temporary, operator-set hold on this job — or the freeze store is unreadable and applies are being held fail-closed. `apply_detail` carries the reason and expiry. |
 
 For a policy block, the coarse `blocked_by_policy` action is accompanied by an
 `apply_detail` string that names the effective policy, where it came from (the

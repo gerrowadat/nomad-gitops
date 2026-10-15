@@ -25,7 +25,16 @@ job "nomad-gitops" {
   #   2. The named identity {} block on the task below (aud matches the method).
   #   3. A policy + binding rule mapping this job to it:
   #        # nomad-gitops-policy.hcl
-  #        namespace "default" { capabilities = ["list-jobs", "read-job", "submit-job"] }
+  #        namespace "default" {
+  #          capabilities = ["list-jobs", "read-job", "submit-job"]
+  #          # Freeze records. read+list honours freezes; add write+destroy
+  #          # only for ENABLE_FREEZE_API. Omit the block if you set
+  #          # FREEZE_VARIABLE_PREFIX = "". A workload identity's implicit
+  #          # Variable access does NOT reach this path.
+  #          variables {
+  #            path "nomad/jobs/gitops/freezes/*" { capabilities = ["read", "list"] }
+  #          }
+  #        }
   #        nomad acl policy apply nomad-gitops nomad-gitops-policy.hcl
   #        nomad acl binding-rule create -auth-method nomad-workloads \
   #          -bind-type policy -bind-name nomad-gitops \
@@ -204,6 +213,40 @@ job "nomad-gitops" {
         # to be absent. Set to "true" to compare dead jobs' specs against their
         # HCL definitions instead.
         # INCLUDE_DEAD_JOBS = "false"
+
+        # ── Freezes ─────────────────────────────────────────────────────────
+        #
+        # A freeze is a temporary, per-job hold on applying changes, set
+        # without editing Git — for an incident, a hand-fix, or a dependency
+        # outage. It holds registering, deregistering and active rollback;
+        # drift detection, /diffs and the drift alerts carry on unchanged.
+        #
+        #   nomad var put nomad/jobs/gitops/freezes/api-server \
+        #     reason='INC-4412: fixing the migration by hand' \
+        #     expires_at='2026-10-15T18:00:00Z'
+        #
+        # The record lives in Nomad Variables, so it survives a restart. This
+        # path needs the ACL policy shown in the job comment above. Set to ""
+        # to disable freeze support entirely. See docs/freezing.md.
+        # FREEZE_VARIABLE_PREFIX = "nomad/jobs/gitops/freezes"
+        #
+        # If the freeze store cannot be read for this long, every apply is
+        # held (fail-closed) — an ignored freeze is a broken safety control.
+        # Set FREEZE_FAIL_OPEN to take the other trade.
+        # FREEZE_MAX_STALENESS = "5m"
+        # FREEZE_FAIL_OPEN     = "false"
+        #
+        # Allow setting and clearing freezes over the JSON API instead of
+        # `nomad var put` (POST/DELETE /api/v1/freezes/{job}). Off by default;
+        # needs API_KEY and the write+destroy Variables capabilities above.
+        # ENABLE_FREEZE_API = "false"
+        #
+        # Expiry for an API-created freeze that does not give one ("0" means
+        # indefinite, which is allowed but alerts permanently), and how long
+        # to keep expired records before purging them ("0" keeps them, which
+        # is the default — they are the record of why a job was frozen).
+        # FREEZE_DEFAULT_TTL       = "0"
+        # FREEZE_EXPIRED_RETENTION = "0"
 
         # ── Staleness guards ────────────────────────────────────────────────
         #

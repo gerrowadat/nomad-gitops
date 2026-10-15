@@ -5,6 +5,121 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
+## Unreleased
+
+### Added
+
+- **Freezes: temporarily pause applies for one job, without editing Git.**
+  A freeze is a short-lived, per-job hold on nomad-gitops's authority to write
+  to that job — for an incident, a hand-fix, or a dependency outage, where a
+  commit and a review round-trip is too slow and would leave `main`
+  misrepresenting intent. It holds `REGISTER`, `DEREGISTER` and nomad-gitops's
+  own active rollback; drift detection, `/diffs`, `/healthz`, the drift metrics
+  and the drift alerts are all unaffected. Nomad's own `auto_revert` is outside
+  nomad-gitops's control and still fires.
+
+  The record lives in a **Nomad Variable** (default prefix
+  `nomad/jobs/gitops/freezes`), not in the process and not in the repo, so it
+  survives a restart and two replicas agree about it. Flat string items mean
+  `nomad var put` is enough:
+
+  ```
+  nomad var put nomad/jobs/gitops/freezes/api-server \
+    reason='INC-4412: fixing the migration by hand' \
+    expires_at='2026-10-15T18:00:00Z'
+  ```
+
+  `reason` is required. `expires_at` is optional — an indefinite freeze is
+  allowed but alerts permanently, because the likeliest thing to go wrong with
+  a freeze is that somebody forgets it. An expired record stops holding
+  anything but is deliberately *not* deleted: it is the only record of why the
+  job was frozen, and it is alerted on until purged.
+
+  This does not weaken the rule that Git decides what is managed and under
+  which policy. A freeze is **deny-only** — it can only make nomad-gitops do
+  less than Git asks, never select a job or widen a policy — which is what lets
+  it live outside Git. The invariant is now stated precisely in
+  [Design philosophy](docs/philosophy.md): Git is the only input that can
+  *grant* write authority; others may withhold it.
+
+  Reading freezes needs no new flag. Six flags configure the rest:
+  `--freeze-variable-prefix` (empty disables the feature),
+  `--freeze-max-staleness` (default `5m`), `--freeze-fail-open`,
+  `--enable-freeze-api`, `--freeze-default-ttl`, and
+  `--freeze-expired-retention`. See [Freezing a job](docs/freezing.md) and
+  [Configuration](docs/configuration.md).
+
+- **`GET /api/v1/freezes`, and gated write endpoints.** Reading freeze records
+  and the freeze store's health is always available with `--api-key`.
+  `POST`/`DELETE /api/v1/freezes/{job}` set and clear a freeze, behind
+  `--enable-freeze-api` on top of the key — they are the only endpoints that
+  change cluster-visible state, so they are off by default and return **501**
+  naming the flag. Writes are CAS-protected on the record's last-read
+  `ModifyIndex` and retried once on conflict. See
+  [JSON API](docs/json-api.md#freezes).
+
+- **`blocked_frozen` apply action and the `HELD` update status.** A job frozen
+  when drift is detected produces no update at all; its diff reports
+  `blocked_frozen`, with the reason and expiry in `apply_detail`. A freeze that
+  lands in the window between detection and apply marks the queued update
+  `HELD` — terminal, like `FAILED`, and not counted as a failure, so the next
+  cycle after the thaw re-derives the intent.
+
+- **Freeze metrics, recording rules, and alerts.** Nine new metrics
+  (`nomad_gitops_frozen_jobs`, `nomad_gitops_job_frozen`,
+  `nomad_gitops_job_freeze_created_timestamp_seconds`,
+  `nomad_gitops_job_freeze_expires_timestamp_seconds`,
+  `nomad_gitops_freeze_records`,
+  `nomad_gitops_freeze_store_last_read_timestamp_seconds`,
+  `nomad_gitops_freeze_store_errors_total`,
+  `nomad_gitops_applies_held_by_freeze_total`, and
+  `nomad_gitops_oldest_pending_update_age_seconds`), five recording rules, and
+  six alerts covering long-lived freezes, indefinite freezes,
+  expired-but-uncleared records, malformed records, and an unreadable or stale
+  freeze store. The freeze alerts are **additive**: the drift alerts keep
+  firing for a frozen job. See [Monitoring](docs/monitoring.md#freezes).
+
+- **`NomadGitopsUpdatesNotDraining` alert.**
+  `nomad_gitops_job_updates_pending` has existed since the apply path shipped
+  with nothing alerting on it, so an update queue that stopped draining was
+  invisible unless someone loaded the console. The console now also shows the
+  age of the oldest pending update, which is what distinguishes a busy applier
+  from a stuck one. Not freeze-specific. See
+  [`monitoring/alerts.yml`](monitoring/alerts.yml).
+
+- **The console reports anything paused or hanging.** Frozen jobs (with the
+  reason, how long, and how long left), expired freeze records left behind
+  (with the `nomad var purge` command), an unreadable or stale freeze store,
+  and the age of the oldest pending update. A cluster with nothing frozen looks
+  exactly as it did before.
+
+### Notes
+
+- **Nomad Variables ACL policy required for freezes, but upgrades are not
+  broken without it.** A workload identity's *implicit* Variable access covers
+  only `nomad/jobs/<job-id>/<group>/<task>`, which the freeze prefix does not
+  match, so an explicit `variables { path "nomad/jobs/gitops/freezes/*" }`
+  block with `read` and `list` is needed (plus `write` and `destroy` for
+  `--enable-freeze-api`).
+
+  Freeze support is on by default, so the fail-closed rule is deliberately
+  narrowed to stores that have worked at least once: a freeze store that has
+  **never** been readable honours no freezes and holds no applies — it is
+  logged as an ERROR at startup, reported as `"store_healthy": false`, shown on
+  the console and alerted, but your applies keep working. A store that worked
+  and then stopped does hold applies once the cached view passes
+  `--freeze-max-staleness`, which is the case where someone may actually be
+  relying on a freeze. **If you intend to use freezes, grant the policy and
+  check `store_healthy` before you need it**; if you do not, set
+  `--freeze-variable-prefix=""`. See
+  [Nomad access](docs/setup/nomad-access.md) and
+  [Freezing a job](docs/freezing.md#when-the-freeze-store-cannot-be-read).
+- **Defaults are unchanged for anything that does not use freezes.** No
+  existing flag default, meta key, or diff behaviour changed. With no freeze
+  records present, behaviour is identical to v1.1.0.
+- No new meta key: a freeze is deliberately *not* expressed in job meta, since
+  the whole point is not needing a commit. `docs/meta-keys.md` is unchanged.
+
 ## v1.1.0 — 2026-07-31
 
 A small feature and dependency release. All changes are backward compatible;

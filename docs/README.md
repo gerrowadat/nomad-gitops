@@ -27,6 +27,8 @@ your deployment.
 - [Applying changes (GitOps mode)](applying-changes.md) — update policies,
   what gets applied, deregistration, and the `apply_action` reasons.
 - [Rollback](rollback.md) — the flap-loop guard and active rollback.
+- [Freezing a job](freezing.md) — pausing applies for one job during an
+  incident, without editing Git.
 - [Monitoring](monitoring.md) — `/healthz`, Prometheus metrics, and alerts.
 - [JSON API](json-api.md) — endpoints and authentication.
 

@@ -54,15 +54,29 @@ func (d *Differ) RunApplier(ctx context.Context) {
 
 // drainUpdates applies every PENDING update in queue order.
 func (d *Differ) drainUpdates() {
+	// Re-read the freeze store before writing anything. A freeze can land in
+	// the window between detection and apply, and that window is exactly when
+	// an operator reaching for a freeze most needs it to work. Only when there
+	// is something to apply, so an idle applier makes no API calls.
+	if d.FreezeEnabled() && d.updateQueue.PendingCount() > 0 {
+		d.refreshFreezes(context.Background())
+	}
 	for {
 		u := d.updateQueue.NextPending()
 		if u == nil {
 			d.pendingUpdates.Set(0)
+			d.publishQueueAge()
 			return
 		}
 		d.applyUpdate(u)
 		d.pendingUpdates.Set(float64(d.updateQueue.PendingCount()))
+		d.publishQueueAge()
 	}
+}
+
+// publishQueueAge republishes the oldest-waiting-update gauge.
+func (d *Differ) publishQueueAge() {
+	d.oldestPendingAge.Set(d.updateQueue.OldestNonTerminalAge(time.Now()).Seconds())
 }
 
 // completeUpdate records an apply outcome in the queue and metrics.
@@ -73,6 +87,17 @@ func (d *Differ) completeUpdate(u *JobUpdate, status JobUpdateStatus, appliedInd
 
 // applyUpdate executes one update against Nomad.
 func (d *Differ) applyUpdate(u *JobUpdate) {
+	// Last gate before any write: a freeze that landed since this update was
+	// enqueued. HELD is terminal, so the queue does not spin on it; the next
+	// diff cycle after the thaw re-derives the same intent, which is how a
+	// failed apply is already retried.
+	if blocked, why := d.freezeBlocks(u.JobID); blocked {
+		slog.Info("Freeze: holding apply", "job", u.JobID, "update_id", u.UpdateID,
+			"operation", u.Operation, "reason", why)
+		d.appliesHeldByFreeze.WithLabelValues(string(u.Operation)).Inc()
+		d.completeUpdate(u, JobUpdateStatusHeld, 0, why)
+		return
+	}
 	if u.Operation == JobUpdateOperationDeregister {
 		d.applyDeregister(u)
 		return

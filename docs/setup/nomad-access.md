@@ -103,8 +103,26 @@ namespace "default" {
   # read-job + list-jobs: detect drift. submit-job: plan, register, deregister,
   # revert (the apply side). Drop submit-job for a detection-only deployment.
   capabilities = ["list-jobs", "read-job", "submit-job"]
+
+  # Freeze records (docs/freezing.md). read + list is enough to honour
+  # freezes; add write + destroy only if you enable --enable-freeze-api.
+  # Omit this block entirely if you run with --freeze-variable-prefix="".
+  variables {
+    path "nomad/jobs/gitops/freezes/*" {
+      capabilities = ["read", "list"]
+    }
+  }
 }
 ```
+
+> **The freeze policy is not optional if you use freezes.** A workload
+> identity's *implicit* Variable access covers exactly `nomad/jobs`,
+> `nomad/jobs/<job-id>`, `nomad/jobs/<job-id>/<group>`, and
+> `nomad/jobs/<job-id>/<group>/<task>` — the freeze prefix does not match that
+> shape, so nothing is granted for free. Without the block above, reads fail,
+> `nomad_gitops_freeze_store_errors_total{op="list"}` rises, and (because the
+> freeze path fails closed) nomad-gitops withholds every apply once the cached
+> view goes stale. nomad-gitops logs which freeze mode it is in at startup.
 
 ```bash
 nomad acl policy apply nomad-gitops nomad-gitops-policy.hcl
