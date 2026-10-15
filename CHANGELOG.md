@@ -5,7 +5,14 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
-## Unreleased
+## v1.2.0 — 2026-10-15
+
+Adds freezes: a temporary, per-job hold on applying changes, set without
+editing Git. Everything is additive and all existing defaults are unchanged —
+a deployment that sets no freeze records behaves exactly as v1.1.2 did. The
+minor bump reflects the new mechanism, its six flags, three endpoints, nine
+metrics and seven alerts. Verified against Nomad 1.9.7, 1.10.5, 1.11.3 and
+2.0.7 (full regression suite, each version).
 
 ### Added
 
@@ -119,6 +126,45 @@
   records present, behaviour is identical to v1.1.0.
 - No new meta key: a freeze is deliberately *not* expressed in job meta, since
   the whole point is not needing a commit. `docs/meta-keys.md` is unchanged.
+
+### Fixed
+
+- **Regression-suite flake when Nomad is started back to back.** Test ports come
+  from a probe-then-close helper, so there is an unavoidable window before the
+  agent binds them. On Linux the suite uses host networking, where losing that
+  race is not a clean failure: Nomad binds HTTP first, so it can answer
+  `/v1/agent/self` and then exit on the RPC or serf bind — surfacing much later
+  as a "connection reset by peer" inside an unrelated test. Startup now
+  confirms the agent is still alive a second after it first answers, reports
+  the cause with the container logs, and retries with fresh ports. Hit once
+  while running the v1.2.0 version matrix; test-only, no product change. See
+  [Nomad version compatibility](docs/nomad-versions.md#flakes-and-how-the-suite-guards-against-them).
+
+## v1.1.2 — 2026-09-14
+
+Dependency and security-scan patch release. No functional or Nomad-facing
+changes.
+
+### Changed
+
+- Go toolchain to 1.27.1 and `apk upgrade` in the container image, clearing the
+  open security-scan alerts.
+- `golang.org/x/crypto` 0.55.0 → 0.56.0.
+
+> Recorded retrospectively: v1.1.1 and v1.1.2 were tagged without CHANGELOG
+> entries. Reconstructed from the Git history of each tag, and neither was
+> separately verified against the Nomad version matrix — both are
+> dependency-only, with no Nomad-facing change.
+
+## v1.1.1 — 2026-08-31
+
+Dependency patch release. No functional or Nomad-facing changes.
+
+### Changed
+
+- Go toolchain to 1.27.0 in the container image.
+- `golang.org/x/crypto` 0.54.0 → 0.55.0, `go-git/v5` 5.19.1 → 5.19.2, and
+  related transitive bumps.
 
 ## v1.1.0 — 2026-07-31
 

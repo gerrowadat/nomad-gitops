@@ -39,7 +39,7 @@ test-regression:
 	go test -tags=regression -timeout 15m -v -count=1 ./tests/regression/...
 
 ## test-regression-versions: run the regression suite against each NOMAD_VERSIONS entry.
-## Example: make test-regression-versions NOMAD_VERSIONS="1.9.6 1.10.5 1.11.3 2.0.2"
+## Example: make test-regression-versions NOMAD_VERSIONS="1.9.7 1.10.5 1.11.3 2.0.7"
 test-regression-versions:
 	@for ver in $(NOMAD_VERSIONS); do \
 		echo "=== Testing against Nomad $$ver ==="; \

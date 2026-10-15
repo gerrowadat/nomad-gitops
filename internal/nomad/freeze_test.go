@@ -918,3 +918,18 @@ func TestFreeze_ViewRefreshedEvenWhenTheDiffIsSkipped(t *testing.T) {
 		t.Errorf("Freezes() = %d records, healthy=%v; want 1 record and a healthy store", len(frozen), healthy)
 	}
 }
+
+func TestFreezeDefaultTTL_ReportsTheConfiguredValue(t *testing.T) {
+	// The server reads this to resolve a freeze request that gives no expiry.
+	cfg := freezeCfg("none")
+	cfg.FreezeDefaultTTL = 4 * time.Hour
+	d, _ := differWithFreezes(t, cfg, defaultMock())
+	if got := d.FreezeDefaultTTL(); got != 4*time.Hour {
+		t.Errorf("FreezeDefaultTTL() = %v, want 4h", got)
+	}
+
+	d2, _ := differWithFreezes(t, freezeCfg("none"), defaultMock())
+	if got := d2.FreezeDefaultTTL(); got != 0 {
+		t.Errorf("FreezeDefaultTTL() = %v, want 0 (indefinite) by default", got)
+	}
+}
