@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -102,6 +103,26 @@ type Config struct {
 	// wins and nomad-gitops stands down.
 	AllowRollback bool
 
+	// Freeze: temporary, operator-set holds on nomad-gitops's authority to
+	// write to one job, stored in Nomad Variables so the source of truth lives
+	// outside this process. A freeze is deny-only — it withholds writes, never
+	// grants them — which is why it can live outside Git without weakening the
+	// rule that Git alone decides what is managed and under which policy.
+	//
+	// FreezeVariablePrefix is the Variables path prefix; empty disables freeze
+	// support entirely. FreezeMaxStaleness is how stale the cached freeze view
+	// may be before every apply is held (fail-closed), and FreezeFailOpen
+	// inverts that. EnableFreezeAPI gates the mutating endpoints.
+	// FreezeDefaultTTL is applied to an API-created freeze with no explicit
+	// expiry (0 = indefinite), and FreezeExpiredRetention optionally purges
+	// records that have been expired at least that long (0 = keep them).
+	FreezeVariablePrefix   string
+	FreezeMaxStaleness     time.Duration
+	FreezeFailOpen         bool
+	EnableFreezeAPI        bool
+	FreezeDefaultTTL       time.Duration
+	FreezeExpiredRetention time.Duration
+
 	// Job selection. Git is always the source of truth for nomad-gitops's
 	// own meta keys: when a job has an HCL file in the repo, that file alone
 	// decides selection and policy. There is deliberately no flag to invert
@@ -168,6 +189,12 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 	fs.DurationVar(&c.DeregisterGrace, "deregister-grace", envDurationOrDefault("DEREGISTER_GRACE", 5*time.Minute), "How long a job must be continuously orphaned (running in Nomad, removed from the repo) before it is deregistered. Absorbs transient renames and mid-edit commits.")
 	fs.StringVar(&c.FlapGuard, "flap-guard", envOrDefault("FLAP_GUARD", "history"), "How to avoid re-applying a spec a recent Nomad job version already failed to deploy (the apply/fail/revert/re-apply loop): history (compare spec fingerprints against Nomad's version history; ephemeral, lost when Nomad GCs old versions), tag (additionally tag the failed version so the block survives GC), or off (disabled). Per-job overridable via the <prefix>_flap_guard meta key. Only applies to deployment-producing jobs.")
 	fs.BoolVar(&c.AllowRollback, "allow-rollback", envBoolOrDefault("ALLOW_ROLLBACK", false), "Enable active rollback: for managed deployment-producing jobs whose update stanza does not set auto_revert, revert to the last stable version when a deployment fails. Off by default. Per-job overridable via the <prefix>_rollback meta key. Where the job's update stanza sets auto_revert=true, Nomad's own rollback wins and nomad-gitops stands down.")
+	fs.StringVar(&c.FreezeVariablePrefix, "freeze-variable-prefix", envOrDefault("FREEZE_VARIABLE_PREFIX", "nomad/jobs/gitops/freezes"), "Nomad Variables path prefix holding freeze records: temporary, per-job holds on applying (register, deregister and active rollback), set without editing Git. Drift detection and reporting are unaffected. Empty disables freeze support entirely. Needs an explicit Variables ACL policy (see docs/setup/nomad-access.md).")
+	fs.DurationVar(&c.FreezeMaxStaleness, "freeze-max-staleness", envDurationOrDefault("FREEZE_MAX_STALENESS", 5*time.Minute), "How stale the cached freeze view may be before every apply is held, once the freeze store has been read successfully at least once. After that a freeze ignored because the store went unreadable is a broken safety control, so writes are withheld rather than assuming nothing is frozen. A store that has never been readable (e.g. an ACL policy predating this feature) holds nothing and is logged and alerted instead. Drift detection is unaffected either way. 0 disables the hold.")
+	fs.BoolVar(&c.FreezeFailOpen, "freeze-fail-open", envBoolOrDefault("FREEZE_FAIL_OPEN", false), "When a previously-readable freeze store stops being readable, proceed as if nothing were frozen instead of holding applies. Off by default (fail-closed).")
+	fs.BoolVar(&c.EnableFreezeAPI, "enable-freeze-api", envBoolOrDefault("ENABLE_FREEZE_API", false), "Enable the mutating freeze endpoints (POST/DELETE /api/v1/freezes/{job}), which write Nomad Variables. Off by default; reading freezes is always available. Requires --api-key.")
+	fs.DurationVar(&c.FreezeDefaultTTL, "freeze-default-ttl", envDurationOrDefault("FREEZE_DEFAULT_TTL", 0), "Expiry applied to a freeze created through the API with no explicit expiry. 0 means indefinite (permitted, but alerted on). Does not affect records written by hand with `nomad var put`.")
+	fs.DurationVar(&c.FreezeExpiredRetention, "freeze-expired-retention", envDurationOrDefault("FREEZE_EXPIRED_RETENTION", 0), "Purge freeze records that have been expired at least this long. 0 disables: expired records suppress nothing but are kept as the record of why a job was frozen, and alerted on until removed.")
 	fs.StringVar(&c.JobSelectorGlob, "job-selector-glob", envOrDefault("JOB_SELECTOR_GLOB", ""), "Glob pattern selecting jobs by name (e.g. 'myprefix-*', '*' for all). Jobs matching either this or --managed-meta-prefix are watched. Empty means no glob selection.")
 	fs.StringVar(&c.ManagedMetaPrefix, "managed-meta-prefix", envOrDefault("MANAGED_META_PREFIX", "gitops"), "Prefix for job meta keys used by nomad-gitops (e.g. 'gitops' means 'gitops_managed = true' in a job's HCL opts it in). Git is always the source of truth for these keys: when a job has an HCL file, the live job's keys are ignored for selection. Empty disables meta-based selection.")
 	fs.DurationVar(&c.MaxGitStaleness, "max-git-staleness", envDurationOrDefault("MAX_GIT_STALENESS", 0), "Maximum time since last successful git fetch before forcing a refresh (0 disables)")
@@ -209,8 +236,37 @@ func LoadFromArgs(fs *flag.FlagSet, args []string) (*Config, error) {
 		return nil, fmt.Errorf("--flap-guard=tag requires --managed-meta-prefix / MANAGED_META_PREFIX to be non-empty: failed-version tag names are derived from the prefix")
 	}
 
+	// Nomad restricts a Variable path to ^[a-zA-Z0-9-_~/]{1,128}$. Catching an
+	// unusable prefix at startup beats discovering it when the first freeze is
+	// set during an incident.
+	if p := strings.Trim(c.FreezeVariablePrefix, "/"); p != "" {
+		if !variablePathRe.MatchString(p) {
+			return nil, fmt.Errorf("--freeze-variable-prefix / FREEZE_VARIABLE_PREFIX %q is not a valid Nomad Variables path: Nomad allows only letters, digits and - _ ~ / (max 128 bytes)", c.FreezeVariablePrefix)
+		}
+		// Leave room for a "/" plus a job-ID slug within Nomad's 128-byte path
+		// limit; a prefix this long could not address any job.
+		if len(p) > 96 {
+			return nil, fmt.Errorf("--freeze-variable-prefix / FREEZE_VARIABLE_PREFIX is %d bytes, leaving too little of Nomad's 128-byte Variable path limit for a job name", len(p))
+		}
+	} else if c.EnableFreezeAPI {
+		return nil, fmt.Errorf("--enable-freeze-api / ENABLE_FREEZE_API requires a non-empty --freeze-variable-prefix / FREEZE_VARIABLE_PREFIX: there is nowhere to store a freeze")
+	}
+
+	// The freeze endpoints live under /api/v1/, which is served only when an
+	// API key is set. Without one, enabling the API would silently do nothing.
+	if c.EnableFreezeAPI && c.APIKey == "" {
+		return nil, fmt.Errorf("--enable-freeze-api / ENABLE_FREEZE_API requires --api-key / API_KEY: the freeze endpoints are served under /api/v1/, which is disabled without a key")
+	}
+
 	return c, nil
 }
+
+// variablePathRe is Nomad's own validation pattern for a Variable path, from
+// the `nomad var put` documentation: "Variable paths are restricted to RFC3986
+// URL-safe characters that don't conflict with the use of the characters @ and
+// . in template blocks. This includes alphanumeric characters and the special
+// characters -, _, ~, and /. Paths may be up to 128 bytes long."
+var variablePathRe = regexp.MustCompile(`^[a-zA-Z0-9-_~/]{1,128}$`)
 
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -545,6 +546,21 @@ func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string)
 }
 func (m *mockDiffSource) Updates() []nomad.JobUpdate { return nil }
 func (m *mockDiffSource) Ready() bool                { return m.ready }
+
+// Freeze support is not exercised through this mock — the freeze regression
+// tests drive the real binary against real Nomad Variables instead — so these
+// report the feature as off.
+func (m *mockDiffSource) FreezeEnabled() bool { return false }
+func (m *mockDiffSource) Freezes() ([]nomad.FreezeRecord, time.Time, bool) {
+	return nil, time.Time{}, false
+}
+func (m *mockDiffSource) FreezeJob(context.Context, string, string, string, string) (nomad.FreezeRecord, error) {
+	return nomad.FreezeRecord{}, errors.New("freeze support disabled in this mock")
+}
+func (m *mockDiffSource) ThawJob(context.Context, string) error {
+	return errors.New("freeze support disabled in this mock")
+}
+func (m *mockDiffSource) FreezeDefaultTTL() time.Duration { return 0 }
 
 type mockGitSource struct {
 	ready     bool

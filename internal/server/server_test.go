@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
@@ -28,6 +29,23 @@ type mockDiffSource struct {
 	updates      []nomad.JobUpdate
 	lastCheck    time.Time
 	lastCommit   string
+
+	// Freeze state. freezeEnabled gates the whole feature; freezes is what
+	// Freezes() returns; freezeRead/freezeHealthy stand in for the store's
+	// last successful read. frozeJob/thawedJob record mutations, and
+	// freezeErr/thawErr force a failure.
+	freezeEnabled  bool
+	freezes        []nomad.FreezeRecord
+	freezeRead     time.Time
+	freezeHealthy  bool
+	freezeTTL      time.Duration
+	frozeJob       []string
+	frozeReason    string
+	frozeBy        string
+	frozeExpiresAt string
+	thawedJob      []string
+	freezeErr      error
+	thawErr        error
 }
 
 func (m *mockDiffSource) Diffs() ([]nomad.JobDiff, time.Time, string) {
@@ -41,6 +59,31 @@ func (m *mockDiffSource) SelectedJobs() ([]nomad.SelectedJob, time.Time, string)
 func (m *mockDiffSource) Updates() []nomad.JobUpdate { return m.updates }
 
 func (m *mockDiffSource) Ready() bool { return !m.lastCheck.IsZero() }
+
+func (m *mockDiffSource) FreezeEnabled() bool { return m.freezeEnabled }
+
+func (m *mockDiffSource) Freezes() ([]nomad.FreezeRecord, time.Time, bool) {
+	return m.freezes, m.freezeRead, m.freezeHealthy
+}
+
+func (m *mockDiffSource) FreezeJob(_ context.Context, jobID, reason, frozenBy, expiresAt string) (nomad.FreezeRecord, error) {
+	if m.freezeErr != nil {
+		return nomad.FreezeRecord{}, m.freezeErr
+	}
+	m.frozeJob = append(m.frozeJob, jobID)
+	m.frozeReason, m.frozeBy, m.frozeExpiresAt = reason, frozenBy, expiresAt
+	return nomad.FreezeRecord{JobID: jobID, Reason: reason, FrozenBy: frozenBy, ExpiresAt: expiresAt}, nil
+}
+
+func (m *mockDiffSource) ThawJob(_ context.Context, jobID string) error {
+	if m.thawErr != nil {
+		return m.thawErr
+	}
+	m.thawedJob = append(m.thawedJob, jobID)
+	return nil
+}
+
+func (m *mockDiffSource) FreezeDefaultTTL() time.Duration { return m.freezeTTL }
 
 // mockGitSource implements server.GitStatusSource.
 type mockGitSource struct {

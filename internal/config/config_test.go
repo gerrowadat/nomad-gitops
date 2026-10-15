@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -991,5 +992,168 @@ func TestLoadFromArgs_DeregisterEnv(t *testing.T) {
 	}
 	if !cfg.EnableDeregister || cfg.DeregisterGrace != time.Hour {
 		t.Errorf("deregister env not honoured: %+v", cfg)
+	}
+}
+
+// ── Freeze flags ─────────────────────────────────────────────────────────────
+
+// freezeEnvKeys is every env var the freeze flags read, cleared before each
+// test so a developer's own environment cannot change the result.
+var freezeEnvKeys = []string{
+	"FREEZE_VARIABLE_PREFIX", "FREEZE_MAX_STALENESS", "FREEZE_FAIL_OPEN",
+	"ENABLE_FREEZE_API", "FREEZE_DEFAULT_TTL", "FREEZE_EXPIRED_RETENTION", "API_KEY",
+}
+
+func clearFreezeEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range freezeEnvKeys {
+		os.Unsetenv(k)
+	}
+}
+
+func TestLoadFromArgs_FreezeDefaults(t *testing.T) {
+	clearFreezeEnv(t)
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Freeze support is on by default (reading is harmless and the console
+	// needs it), but the write API is not.
+	if cfg.FreezeVariablePrefix != "nomad/jobs/gitops/freezes" {
+		t.Errorf("FreezeVariablePrefix default = %q", cfg.FreezeVariablePrefix)
+	}
+	if cfg.FreezeMaxStaleness != 5*time.Minute {
+		t.Errorf("FreezeMaxStaleness default: want 5m, got %v", cfg.FreezeMaxStaleness)
+	}
+	if cfg.FreezeFailOpen {
+		t.Error("FreezeFailOpen should default to false: an unreadable freeze store holds applies")
+	}
+	if cfg.EnableFreezeAPI {
+		t.Error("EnableFreezeAPI should default to false")
+	}
+	if cfg.FreezeDefaultTTL != 0 {
+		t.Errorf("FreezeDefaultTTL default: want 0 (indefinite), got %v", cfg.FreezeDefaultTTL)
+	}
+	if cfg.FreezeExpiredRetention != 0 {
+		t.Errorf("FreezeExpiredRetention default: want 0 (keep expired records), got %v", cfg.FreezeExpiredRetention)
+	}
+}
+
+func TestLoadFromArgs_FreezeFlagsSet(t *testing.T) {
+	clearFreezeEnv(t)
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--api-key", "k",
+		"--freeze-variable-prefix", "nomad/jobs/ops/holds",
+		"--freeze-max-staleness", "90s",
+		"--freeze-fail-open",
+		"--enable-freeze-api",
+		"--freeze-default-ttl", "4h",
+		"--freeze-expired-retention", "24h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FreezeVariablePrefix != "nomad/jobs/ops/holds" ||
+		cfg.FreezeMaxStaleness != 90*time.Second ||
+		!cfg.FreezeFailOpen ||
+		!cfg.EnableFreezeAPI ||
+		cfg.FreezeDefaultTTL != 4*time.Hour ||
+		cfg.FreezeExpiredRetention != 24*time.Hour {
+		t.Errorf("freeze flags not set: %+v", cfg)
+	}
+}
+
+func TestLoadFromArgs_FreezeEnv(t *testing.T) {
+	clearFreezeEnv(t)
+	os.Setenv("FREEZE_VARIABLE_PREFIX", "nomad/jobs/team/freezes")
+	os.Setenv("FREEZE_MAX_STALENESS", "2m")
+	os.Setenv("FREEZE_FAIL_OPEN", "true")
+	os.Setenv("ENABLE_FREEZE_API", "true")
+	os.Setenv("API_KEY", "k")
+	os.Setenv("FREEZE_DEFAULT_TTL", "8h")
+	t.Cleanup(func() { clearFreezeEnv(t) })
+
+	cfg, err := LoadFromArgs(newFS(), []string{"--repo-url", "https://example.com/r.git"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FreezeVariablePrefix != "nomad/jobs/team/freezes" ||
+		cfg.FreezeMaxStaleness != 2*time.Minute ||
+		!cfg.FreezeFailOpen ||
+		!cfg.EnableFreezeAPI ||
+		cfg.FreezeDefaultTTL != 8*time.Hour {
+		t.Errorf("freeze env vars not honoured: %+v", cfg)
+	}
+}
+
+func TestLoadFromArgs_FreezePrefixMustBeAValidVariablePath(t *testing.T) {
+	// Nomad restricts a Variable path to ^[a-zA-Z0-9-_~/]{1,128}$. Catching an
+	// unusable prefix at startup beats discovering it mid-incident.
+	for _, bad := range []string{"nomad/jobs/gitops.freezes", "nomad/jobs/gitops freezes", "nomad/jobs/gitops:freezes"} {
+		clearFreezeEnv(t)
+		if _, err := LoadFromArgs(newFS(), []string{
+			"--repo-url", "https://example.com/r.git",
+			"--freeze-variable-prefix", bad,
+		}); err == nil {
+			t.Errorf("prefix %q should be rejected: Nomad would not accept it as a Variable path", bad)
+		}
+	}
+}
+
+func TestLoadFromArgs_FreezePrefixTooLongRejected(t *testing.T) {
+	clearFreezeEnv(t)
+	long := "nomad/jobs/" + strings.Repeat("a", 100)
+	if _, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--freeze-variable-prefix", long,
+	}); err == nil {
+		t.Error("a prefix leaving no room for a job name within Nomad's 128-byte path limit should be rejected")
+	}
+}
+
+func TestLoadFromArgs_EmptyFreezePrefixDisablesSupport(t *testing.T) {
+	clearFreezeEnv(t)
+	cfg, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--freeze-variable-prefix", "",
+	})
+	if err != nil {
+		t.Fatalf("an empty prefix should be accepted (it disables freeze support), got %v", err)
+	}
+	if cfg.FreezeVariablePrefix != "" {
+		t.Errorf("FreezeVariablePrefix = %q, want empty", cfg.FreezeVariablePrefix)
+	}
+}
+
+func TestLoadFromArgs_FreezeAPIRequiresAPrefix(t *testing.T) {
+	clearFreezeEnv(t)
+	if _, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--api-key", "k",
+		"--enable-freeze-api",
+		"--freeze-variable-prefix", "",
+	}); err == nil {
+		t.Error("--enable-freeze-api with no prefix should be rejected: there is nowhere to store a freeze")
+	}
+}
+
+func TestLoadFromArgs_FreezeAPIRequiresAnAPIKey(t *testing.T) {
+	// The freeze endpoints live under /api/v1/, which is not served without a
+	// key, so enabling the write API without one would silently do nothing.
+	clearFreezeEnv(t)
+	if _, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--enable-freeze-api",
+	}); err == nil {
+		t.Error("--enable-freeze-api without --api-key should be rejected")
+	}
+
+	clearFreezeEnv(t)
+	if _, err := LoadFromArgs(newFS(), []string{
+		"--repo-url", "https://example.com/r.git",
+		"--enable-freeze-api", "--api-key", "k",
+	}); err != nil {
+		t.Errorf("--enable-freeze-api with a key should be accepted, got %v", err)
 	}
 }

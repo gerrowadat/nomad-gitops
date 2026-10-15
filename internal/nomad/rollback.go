@@ -290,6 +290,15 @@ func (d *Differ) checkRollbacks(metaByJob map[string]map[string]string, q *nomad
 		if !d.effectiveRollback(meta) {
 			continue
 		}
+		// A freeze withholds an active rollback too. Nomad's own auto_revert is
+		// outside our control and still fires — the one thing a freeze cannot
+		// hold — which is why the stand-down below is separate from this.
+		if blocked, why := d.freezeBlocks(jobID); blocked {
+			slog.Info("Freeze: holding active rollback", "job", jobID, "reason", why)
+			d.appliesHeldByFreeze.WithLabelValues(string(JobUpdateOperationRevert)).Inc()
+			d.rollbacks.WithLabelValues(jobID, "held_by_freeze").Inc()
+			continue
+		}
 		dep, _, err := d.jobs.LatestDeployment(jobID, q)
 		if err != nil {
 			d.nomadAPIErrors.WithLabelValues("deployment").Inc()

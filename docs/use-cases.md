@@ -142,6 +142,33 @@ nomad-gitops do the revert. See [Rollback](rollback.md).
 
 ---
 
+## Pause a job during an incident, without a PR
+
+**Goal:** stop nomad-gitops reconciling one job *right now* — you are fixing it
+by hand, or a dependency is down and re-registering would make things worse —
+and have normal behaviour resume on its own.
+
+[Freeze](freezing.md) it. The hold lives in a Nomad Variable, so it survives a
+restart and needs no commit:
+
+```bash
+nomad var put nomad/jobs/gitops/freezes/api-server \
+  reason='INC-4412: fixing the migration by hand' \
+  expires_at='2026-10-15T18:00:00Z'
+```
+
+Registering, deregistering and active rollback for that job are held; drift
+detection, `/diffs` and the drift alerts carry on unchanged. At the expiry the
+job resumes reconciling with no action from anyone. Thaw early with
+`nomad var purge nomad/jobs/gitops/freezes/api-server`.
+
+Give the freeze an expiry. An indefinite freeze is allowed but alerts
+permanently, because the thing most likely to go wrong with a freeze is that
+somebody forgets it. With `--enable-freeze-api` you can do the same over HTTP
+(`POST /api/v1/freezes/api-server` with `{"reason":"…","expires_in":"4h"}`).
+
+---
+
 ## Run on the cluster it watches, with no token to manage
 
 **Goal:** deploy under Nomad on an ACL-enabled cluster without minting and

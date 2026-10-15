@@ -121,12 +121,78 @@ that failed, so re-applying it would re-enter the failure. The guard releases th
 moment Git moves to a spec that has not failed — push a fix (or a revert) commit.
 See [Rollback](rollback.md).
 
+## I froze a job and it still shows as drifting, and still alerts
+
+That is deliberate. A [freeze](freezing.md) withholds *writes*; it does not hide
+drift. You froze the job knowing it was drifting and not wanting that
+reconciled yet, so the drift stays on `/diffs` (as `blocked_frozen`) and
+`NomadJobDrift` keeps firing. A mechanism that silences alerts as a side effect
+of an incident action is how drift gets forgotten.
+
+If you want quiet during a known incident, take an Alertmanager silence on the
+`nomad_job` label — explicit, time-boxed, and audited by Alertmanager rather
+than by us.
+
+## Nomad reverted my frozen job anyway
+
+A freeze stops *nomad-gitops*, not Nomad. If the job's `update` stanza sets
+`auto_revert = true`, Nomad watches the rollout itself and reverts a failed
+deployment regardless of any freeze — that machinery is inside the cluster and
+outside nomad-gitops's control. A freeze does hold nomad-gitops's own
+[active rollback](rollback.md) (`--allow-rollback`).
+
+## Every apply is being held and nothing is frozen
+
+Check `/api/v1/freezes` for `"store_healthy": false`, and the console for a
+"Freeze store:" line. A freeze store that **worked and then stopped** holds
+every apply once the cached view passes `--freeze-max-staleness`, rather than
+assuming nothing is frozen — a freeze ignored because of an ACL error is a
+broken safety control. Fix the policy (see
+[Nomad access](setup/nomad-access.md)), or set `--freeze-fail-open` to take the
+other trade.
+
+A store that has **never** been readable is a different case and holds nothing:
+see the next entry. Drift detection is never affected either way.
+
+## `freeze store has never been readable` in the logs
+
+Freeze support is on by default and needs a Nomad Variables ACL policy that an
+older deployment will not have. Rather than stopping your applies for a feature
+you are not using, nomad-gitops honours no freezes at all in that state and
+says so loudly — an ERROR at startup, `"store_healthy": false`, a console line,
+and `NomadGitopsFreezeStoreErrors`.
+
+Two ways to clear it: grant `variables { path "<prefix>/*" }` with `read` and
+`list` (see [Nomad access](setup/nomad-access.md)) if you want freezes, or set
+`--freeze-variable-prefix=""` to turn the mechanism off entirely. Do not leave
+it in between: a freeze you set in this state will silently not be honoured.
+
+## A freeze expired but the record is still there
+
+Expired records are kept on purpose: deleting one would destroy the only record
+of why the job was frozen, and a record left behind is a signal that somebody
+meant to come back to it. The job itself resumed reconciling the moment the
+freeze expired. Purge it with `nomad var purge <path>`, or set
+`--freeze-expired-retention` to have nomad-gitops tidy them up.
+
+## Should I freeze a job or change its policy in Git?
+
+A freeze is for a hold measured in hours, during an incident, when a PR
+round-trip is too slow. Anything longer-lived belongs in Git —
+`gitops_update_policy = "none"` to keep detecting but never apply, or removing
+`gitops_managed` to stop managing the job. The escalating alerts on long-lived
+and indefinite freezes exist to push you back to Git. See
+[Freezing a job](freezing.md#when-to-use-git-instead).
+
 ## Does it lose anything on restart?
 
 No. nomad-gitops holds no persistent state of its own — the update queue and
 drift results are in memory and are rebuilt from Git and Nomad on the next diff
 cycle, which together hold all durable truth. A restart costs at most one diff
 cycle. It needs no volume and can be scheduled on any node.
+
+[Freezes](freezing.md) survive a restart for the same reason: the record lives
+in Nomad Variables, not in the process, and is re-read every cycle.
 
 ## Can I run more than one replica?
 

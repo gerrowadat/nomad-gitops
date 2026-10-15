@@ -30,6 +30,20 @@ type DiffSource interface {
 	Updates() []nomad.JobUpdate
 	// Ready reports whether at least one diff check has completed.
 	Ready() bool
+
+	// FreezeEnabled reports whether freeze support is configured.
+	FreezeEnabled() bool
+	// Freezes returns the current freeze records, the time of the last
+	// successful read of the freeze store, and whether any read has succeeded.
+	Freezes() ([]nomad.FreezeRecord, time.Time, bool)
+	// FreezeJob places or replaces a freeze on a job. expiresAt is RFC3339,
+	// or empty for an indefinite freeze.
+	FreezeJob(ctx context.Context, jobID, reason, frozenBy, expiresAt string) (nomad.FreezeRecord, error)
+	// ThawJob removes a job's freeze.
+	ThawJob(ctx context.Context, jobID string) error
+	// FreezeDefaultTTL is the expiry applied to an API-created freeze that
+	// does not specify one; 0 means indefinite.
+	FreezeDefaultTTL() time.Duration
 }
 
 // GitStatusSource is satisfied by *gitwatch.Watcher.
@@ -124,6 +138,12 @@ func NewWithRegistry(cfg *config.Config, diffs DiffSource, git GitStatusSource, 
 		apiMux.HandleFunc("GET /api/v1/status", s.handleAPIStatus)
 		apiMux.HandleFunc("GET /api/v1/version", s.handleAPIVersion)
 		apiMux.HandleFunc("POST /api/v1/refresh", s.handleAPIRefresh)
+		apiMux.HandleFunc("GET /api/v1/freezes", s.handleAPIFreezes)
+		// Mutating: gated by --enable-freeze-api on top of the API key, the
+		// same opt-in-twice-over shape as --enable-job-creation. These are the
+		// only endpoints that change cluster-visible state.
+		apiMux.HandleFunc("POST /api/v1/freezes/{job}", s.handleAPIFreezeJob)
+		apiMux.HandleFunc("DELETE /api/v1/freezes/{job}", s.handleAPIThawJob)
 		s.mux.Handle("/api/v1/", requireAPIKey(cfg.APIKey)(apiMux))
 		// OpenAPI spec is public — no auth required.
 		s.mux.HandleFunc("GET /api/openapi.json", s.handleAPISpec)
@@ -245,8 +265,53 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
   <p>Apply mode: default policy <code>{{.DefaultPolicy}}</code>
     {{- if eq .DefaultPolicy "none"}} (detection only unless a job&#39;s meta opts in){{end}},
     job creation {{if .JobCreationEnabled}}<span class="bad">enabled</span>{{else}}disabled{{end}}
-    {{- if .PendingUpdates}}, <span class="starting">{{.PendingUpdates}} update(s) pending</span>{{end}}
+    {{- if .PendingUpdates}}, <span class="starting">{{.PendingUpdates}} update(s) pending{{if .OldestPending}}, oldest {{.OldestPending}}{{end}}</span>{{end}}
   </p>
+  {{- if .FreezeStoreProblem}}
+  <p><span class="bad">Freeze store: {{.FreezeStoreProblem}}</span></p>
+  {{- end}}
+  {{- if .Frozen}}
+  <h2>Frozen: {{len .Frozen}} job(s) — writes held</h2>
+  <p><small>A freeze holds registering, deregistering and active rollback for a job.
+    Drift is still detected and still alerts. Nomad&#39;s own <code>auto_revert</code> is
+    outside nomad-gitops&#39;s control and still fires.</small></p>
+  <table style="border-collapse:collapse;width:100%">
+    <thead><tr style="text-align:left;border-bottom:1px solid #ccc">
+      <th style="padding:0.3em 1em 0.3em 0">Job</th>
+      <th style="padding:0.3em 1em 0.3em 0">Frozen</th>
+      <th style="padding:0.3em 0">Reason</th>
+    </tr></thead>
+    <tbody>
+    {{- range .Frozen}}
+    <tr>
+      <td style="padding:0.25em 1em 0.25em 0;vertical-align:top"><code>{{.JobID}}</code></td>
+      <td style="padding:0.25em 1em 0.25em 0;vertical-align:top">
+        <span class="{{.Class}}">{{.When}}</span>
+      </td>
+      <td style="padding:0.25em 0;vertical-align:top">{{.Reason}}</td>
+    </tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- end}}
+  {{- if .ExpiredFreezes}}
+  <h2>Expired freeze records: {{len .ExpiredFreezes}}</h2>
+  <p><small>These suppress nothing — the jobs reconcile normally again — but they
+    were left behind, and somebody meant to come back to them.</small></p>
+  <table style="border-collapse:collapse;width:100%">
+    <tbody>
+    {{- range .ExpiredFreezes}}
+    <tr>
+      <td style="padding:0.25em 1em 0.25em 0;vertical-align:top"><code>{{.JobID}}</code></td>
+      <td style="padding:0.25em 1em 0.25em 0;vertical-align:top"><span class="bad">{{.When}}</span></td>
+      <td style="padding:0.25em 0;vertical-align:top">
+        {{.Reason}}<br><small>purge with <code>nomad var purge {{.Path}}</code></small>
+      </td>
+    </tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- end}}
   {{- if .LastCheck}}
   <p>Last diff check: {{.LastCheck}}{{if .Commit}} (commit <code>{{.Commit}}</code>){{end}}</p>
   {{- end}}
@@ -304,16 +369,31 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		managedMetaKey = s.cfg.ManagedMetaPrefix + "_managed"
 	}
 
+	// A count of pending updates on its own says nothing; the age of the
+	// oldest is what distinguishes a busy applier from a stuck one.
 	pendingUpdates := 0
+	var oldestDetected time.Time
 	for _, u := range s.diffs.Updates() {
-		if u.Status == nomad.JobUpdateStatusPending || u.Status == nomad.JobUpdateStatusInProgress {
-			pendingUpdates++
+		if u.Status != nomad.JobUpdateStatusPending && u.Status != nomad.JobUpdateStatusInProgress {
+			continue
 		}
+		pendingUpdates++
+		if t, err := time.Parse(time.RFC3339, u.DetectedAt); err == nil {
+			if oldestDetected.IsZero() || t.Before(oldestDetected) {
+				oldestDetected = t
+			}
+		}
+	}
+	oldestPending := ""
+	if !oldestDetected.IsZero() {
+		oldestPending = humanizeDuration(time.Since(oldestDetected)) + " old"
 	}
 	defaultPolicy := s.cfg.DefaultUpdatePolicy
 	if defaultPolicy == "" {
 		defaultPolicy = "none"
 	}
+
+	frozen, expiredFreezes, freezeProblem := s.freezeRows(time.Now())
 
 	data := struct {
 		Version            string
@@ -329,6 +409,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		DefaultPolicy      string
 		JobCreationEnabled bool
 		PendingUpdates     int
+		OldestPending      string
+		Frozen             []freezeRow
+		ExpiredFreezes     []freezeRow
+		FreezeStoreProblem string
 	}{
 		Version:            s.buildInfo.Version,
 		Starting:           starting,
@@ -340,6 +424,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		DefaultPolicy:      defaultPolicy,
 		JobCreationEnabled: s.cfg.EnableJobCreation,
 		PendingUpdates:     pendingUpdates,
+		OldestPending:      oldestPending,
+		Frozen:             frozen,
+		ExpiredFreezes:     expiredFreezes,
+		FreezeStoreProblem: freezeProblem,
 	}
 	if !lastCheck.IsZero() {
 		data.LastCheck = lastCheck.Format(time.RFC3339)
@@ -377,6 +465,21 @@ type HealthResponse struct {
 	LastCheck  string      `json:"last_check,omitempty"`
 	GitCommit  string      `json:"git_commit,omitempty"`
 	GitUpdated string      `json:"git_updated,omitempty"`
+
+	// FrozenCount and Frozen report jobs whose writes are currently withheld
+	// by a freeze, so a health check answers "what is paused?" without a
+	// second request. Note Status stays "diffs_detected" for a frozen job
+	// that is drifting: a freeze withholds writes, it does not hide drift.
+	FrozenCount int           `json:"frozen_count,omitempty"`
+	Frozen      []FrozenEntry `json:"frozen,omitempty"`
+}
+
+// FrozenEntry is one element of HealthResponse.Frozen.
+type FrozenEntry struct {
+	JobID     string `json:"job_id"`
+	Reason    string `json:"reason,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	State     string `json:"state"`
 }
 
 // DiffEntry is one element of HealthResponse.Diffs.
@@ -424,6 +527,20 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Status:    status,
 		DiffCount: len(diffs),
 		Diffs:     entries,
+	}
+	if frozen, _, _ := s.diffs.Freezes(); len(frozen) > 0 {
+		for _, f := range frozen {
+			if !f.State.InForce() {
+				continue
+			}
+			resp.Frozen = append(resp.Frozen, FrozenEntry{
+				JobID:     f.JobID,
+				Reason:    f.Reason,
+				ExpiresAt: f.ExpiresAt,
+				State:     string(f.State),
+			})
+		}
+		resp.FrozenCount = len(resp.Frozen)
 	}
 	if !lastCheck.IsZero() {
 		resp.LastCheck = lastCheck.Format(time.RFC3339)

@@ -40,6 +40,16 @@ nomad-gitops does to a job, you change the job's HCL and commit it —
 reviewable, version-controlled, and the same whether the tool was running at the
 time or not.
 
+Stated precisely: **Git is the only input that can *grant* nomad-gitops
+authority to write to a job. Other inputs may withhold that authority, never
+extend it.** Every gate in the system is of the second kind — the policy
+defaults, `--enable-job-creation`, `--enable-deregister`, the flap-loop guard,
+and [freezes](freezing.md) — so none of them can make nomad-gitops act where
+Git has not asked it to. That is what lets a freeze live in Nomad Variables
+rather than in the repo without weakening this rule: a freeze can only ever
+make the tool do *less* than Git asks. Something that selected a job, widened a
+policy, or authorised a write would have to be in Git.
+
 The corollary is **decisions are derived from git history, not remembered**.
 "Has this drift been here since before the job was opted in?" and "did this spec
 already fail?" are both answered by querying Git and Nomad, so they hold
@@ -54,8 +64,10 @@ cycle after a restart. Consequences:
 
 - It needs no volume and can be scheduled on any node.
 - There is no external database — no SQLite, Postgres, or Redis. Where durable
-  per-job state is genuinely needed (e.g. the flap-guard's `tag` mode), it is
-  stored in Nomad itself (a version tag), not in a store the tool owns.
+  per-job state is genuinely needed, it is stored in Nomad itself — a version
+  tag for the flap-guard's `tag` mode, a Nomad Variable for a
+  [freeze](freezing.md) — not in a store the tool owns. Both are re-read from
+  Nomad rather than remembered, so a restart changes nothing.
 - A restart costs at most one diff cycle; it can die at any instant and recompute.
 
 ## Plan before every write, CAS on every write

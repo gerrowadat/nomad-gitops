@@ -35,6 +35,12 @@ with `"status": "starting"`.
 `"status"` is `"ok"` when there are no diffs, `"diffs_detected"` when drift is
 detected, and `"starting"` (with HTTP 503) before the first diff check completes.
 
+When any job is [frozen](freezing.md), the response also carries
+`"frozen_count"` and a `"frozen"` array of `{job_id, reason, expires_at,
+state}`, so a health check answers "what is paused?" without a second request.
+Note the status stays `"diffs_detected"` for a frozen job that is drifting: a
+freeze withholds writes, it does not hide drift.
+
 The `/diffs` endpoint and all `/api/v1/` endpoints that return state also return
 HTTP 503 during startup.
 
@@ -86,18 +92,36 @@ runs and whether it is working correctly.
 | `nomad_gitops_diff_fields_redacted_total` | Counter | — | Plan-diff field values replaced with `[REDACTED]` before storage (only when `--redact-secrets` is on). A rising count means drifted jobs have changes in env vars, templates, or secret-like fields. |
 | `nomad_gitops_updates_blocked_by_policy_total` | Counter | `nomad_job`, `policy` | Diffs that would have produced a JobUpdate but were filtered out by the effective update policy. Watch this to find jobs accumulating unapplied drift. |
 | `nomad_gitops_updates_blocked_creation_disabled_total` | Counter | `nomad_job` | First-time registrations blocked because `--enable-job-creation` is off. |
-| `nomad_gitops_job_updates_total` | Counter | `operation`, `status` | JobUpdates reaching a terminal state (`SUCCEEDED`, `FAILED`, `SUPERSEDED`). Operation is `REGISTER`, `DEREGISTER`, or `REVERT`. |
+| `nomad_gitops_job_updates_total` | Counter | `operation`, `status` | JobUpdates reaching a terminal state (`SUCCEEDED`, `FAILED`, `SUPERSEDED`, `HELD`). Operation is `REGISTER`, `DEREGISTER`, or `REVERT`. `HELD` means a [freeze](freezing.md) landed between detection and apply. |
 | `nomad_gitops_job_updates_pending` | Gauge | — | Updates currently waiting to be applied. |
+| `nomad_gitops_oldest_pending_update_age_seconds` | Gauge | — | Age of the oldest update still waiting (`PENDING` or `IN_PROGRESS`); `0` when nothing is waiting. Updates normally apply within one `--apply-interval`, so a growing value means the apply loop is stuck rather than busy — a pending *count* alone cannot tell you that. |
 | `nomad_gitops_meta_key_issues_total` | Counter | `nomad_job`, `issue` | Job meta keys under the managed prefix that nomad-gitops cannot act on: `unknown_key` (e.g. a typo like `gitops_managd` or `gitops.managed`) or `invalid_value` (a recognised key with an unusable value, e.g. `gitops_managed = "True"`). Counted every cycle the issue persists; logged once per unique issue (WARN for unknown keys, ERROR for bad values). |
 | `nomad_gitops_meta_key_changes_total` | Counter | `nomad_job`, `source` | Managed-prefix meta keys added, removed, or changed between check cycles, on the HCL side (a commit changed them) or the live side (someone re-registered the job manually). Each transition is also logged at INFO with the behavioural consequence. |
 | `nomad_gitops_meta_only_diffs_total` | Counter | `nomad_job` | Diffs confined to nomad-gitops's own meta keys, detected per check cycle. By default these are neither counted as drift nor applied (`--count-meta-only-changes`, `--apply-meta-only-changes`); they converge on the next real update. A non-zero rate is normal after opting a running job in via a commit. |
 | `nomad_gitops_updates_blocked_preexisting_total` | Counter | `nomad_job` | Updates not enqueued because the drift pre-dated a scope change that brought it in — the job's opt-in (managed tag added) or a policy widening (e.g. `image-only` → `full`). Enable applying it with `--apply-existing-drift`. |
 | `nomad_gitops_jobs_left_management_total` | Counter | `nomad_job`, `reason` | Managed jobs that left GitOps management, by reason: `tag_removed` (the managed tag was dropped from HCL) or `removed_from_repo` (HCL file deleted or job renamed). Counted once per transition. See [Deregistration](applying-changes.md#deregistration-jobs-removed-from-the-repo). |
 | `nomad_gitops_updates_blocked_known_failed_total` | Counter | `nomad_job` | Registrations withheld by the flap-loop guard because the spec matches a recent failed deployment. A persistent non-zero value means a job is stuck on a known-bad commit awaiting a fix in Git. See [Rollback](rollback.md). |
-| `nomad_gitops_rollbacks_total` | Counter | `nomad_job`, `result` | Active-rollback outcomes: `queued` (a revert was enqueued), `deferred_auto_revert` (stood down because the job sets `auto_revert`), `no_stable_version` (no earlier stable version to revert to). See [Rollback](rollback.md). |
+| `nomad_gitops_rollbacks_total` | Counter | `nomad_job`, `result` | Active-rollback outcomes: `queued` (a revert was enqueued), `deferred_auto_revert` (stood down because the job sets `auto_revert`), `no_stable_version` (no earlier stable version to revert to), `held_by_freeze` (the job is [frozen](freezing.md)). See [Rollback](rollback.md). |
 | `nomad_gitops_failed_versions_tagged_total` | Counter | `nomad_job` | Failed versions tagged by `--flap-guard=tag` so the block survives Nomad's version GC. |
 | `nomad_gitops_token_refreshes_total` | Counter | `result` | Re-reads of the `--nomad-token-file`: `rotated` (the token changed and was applied) or `error` (the file could not be read; previous token kept). See [Nomad access](setup/nomad-access.md). |
 | `nomad_gitops_logins_total` | Counter | `result` | Workload-identity token exchanges via `/v1/acl/login` (`--nomad-login-auth-method`): `success` (a fresh ACL token was obtained and applied) or `error` (the exchange failed; previous token kept). A rising `error` count means the JWT/auth-method/binding-rule setup is wrong — check the startup log. See [Nomad access](setup/nomad-access.md#workload-identity-recommended-under-nomad). |
+
+### Freezes
+
+These describe [freezes](freezing.md): temporary, operator-set holds on
+applying changes to a job. They are recomputed from the freeze store on every
+diff cycle. A cluster with nothing frozen reports zeros and no per-job series.
+
+| Metric | Type | Labels | What it tells you |
+|--------|------|--------|-------------------|
+| `nomad_gitops_frozen_jobs` | Gauge | — | Jobs whose writes are currently withheld by a freeze. The single "is anything paused?" number. |
+| `nomad_gitops_job_frozen` | Gauge | `nomad_job` | `1` for each job with a freeze in force; absent otherwise. The join series for the shipped freeze alerts and for per-job dashboards. An expired record is not in force and does not appear here. |
+| `nomad_gitops_job_freeze_created_timestamp_seconds` | Gauge | `nomad_job` | When the freeze was set (the Nomad Variable's `CreateTime`). `time() - metric` is how long the job has been frozen — the number that says a freeze has been forgotten. |
+| `nomad_gitops_job_freeze_expires_timestamp_seconds` | Gauge | `nomad_job` | When the freeze expires. **Deliberately absent for an indefinite freeze**, which is what makes those queryable as `nomad_gitops_job_frozen unless on(nomad_job) <this>`. |
+| `nomad_gitops_freeze_records` | Gauge | `state` (`active`, `indefinite`, `expired`, `malformed`) | Freeze records by state. `expired` records suppress nothing but are kept as the record of why a job was frozen; `malformed` ones *are* holding writes, read conservatively as indefinite. |
+| `nomad_gitops_freeze_store_last_read_timestamp_seconds` | Gauge | — | Last successful read of the freeze store; absent until the first one succeeds. Once it is older than `--freeze-max-staleness`, every apply is held (unless `--freeze-fail-open`). |
+| `nomad_gitops_freeze_store_errors_total` | Counter | `op` (`list`, `read`, `write`, `delete`) | Errors talking to Nomad Variables under the freeze prefix. Usually a missing ACL policy — a workload identity's implicit Variable access does not reach the freeze path. A store that has *never* been readable honours no freezes and holds no applies; one that worked and then stopped holds applies once the view goes stale. See [Freezing a job](freezing.md#when-the-freeze-store-cannot-be-read). |
+| `nomad_gitops_applies_held_by_freeze_total` | Counter | `operation` (`REGISTER`, `DEREGISTER`, `REVERT`) | Writes actually withheld by a freeze. Counts only writes that would otherwise have happened, so it is not inflated by jobs a policy was already holding. |
 
 ### Git tracking
 
@@ -159,3 +183,15 @@ The alerts cover:
 - **NomadGitopsDown** — Prometheus cannot reach the `/metrics` endpoint
 - **NomadGitopsWebhookErrors** — webhook deliveries are consistently failing
 - **NomadGitopsUpdatesNotDraining** — updates have been queued but unapplied for over 15 minutes, meaning the apply loop is stuck rather than busy
+- **NomadGitopsJobFrozen** — a job has been [frozen](freezing.md) for over a day
+- **NomadGitopsJobFrozenIndefinite** — a freeze has no expiry, so it will never lift on its own
+- **NomadGitopsFreezeExpired** — an expired freeze record was left in place
+- **NomadGitopsFreezeMalformed** — a freeze record cannot be parsed, and is holding writes conservatively
+- **NomadGitopsFreezeStoreErrors** — Nomad Variables calls against the freeze prefix are failing
+- **NomadGitopsFreezeViewStale** — the freeze view is too stale to write against, so every apply is held
+
+The freeze alerts are **additive**: the drift alerts above keep firing for a
+frozen job, because you froze it knowing it was drifting and a mechanism that
+silences alerts as a side effect of an incident action is how drift gets
+forgotten. For quiet during a known incident, use an Alertmanager silence on
+the `nomad_job` label.

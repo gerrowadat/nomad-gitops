@@ -41,3 +41,29 @@ groups:
       # Seconds since the last successful git fetch.
       - record: nomad_gitops:seconds_since_git_update
         expr: time() - nomad_gitops_git_last_update_timestamp_seconds
+
+      # How long each frozen job has been frozen (seconds). A freeze is meant
+      # to be temporary, so this is the number that says one has been
+      # forgotten.
+      - record: nomad_gitops:job_freeze_age_seconds
+        expr: time() - nomad_gitops_job_freeze_created_timestamp_seconds
+
+      # Time left on each time-boxed freeze (seconds); negative once expired.
+      # Absent for indefinite freezes, which have no expiry series.
+      - record: nomad_gitops:job_freeze_remaining_seconds
+        expr: nomad_gitops_job_freeze_expires_timestamp_seconds - time()
+
+      # Frozen jobs with no expiry set: frozen, but absent from the expiry
+      # series. These never lift on their own.
+      - record: nomad_gitops:job_frozen_indefinite
+        expr: >
+          nomad_gitops_job_frozen
+          unless on(nomad_job) nomad_gitops_job_freeze_expires_timestamp_seconds
+
+      # Seconds since the freeze store was last read successfully.
+      - record: nomad_gitops:seconds_since_freeze_store_read
+        expr: time() - nomad_gitops_freeze_store_last_read_timestamp_seconds
+
+      # 5-minute rate of freeze-store errors, labelled by operation.
+      - record: nomad_gitops:freeze_store_error_rate5m
+        expr: rate(nomad_gitops_freeze_store_errors_total[5m])

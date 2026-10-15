@@ -52,12 +52,20 @@ const (
 	JobUpdateStatusSucceeded  JobUpdateStatus = "SUCCEEDED"
 	JobUpdateStatusFailed     JobUpdateStatus = "FAILED"
 	JobUpdateStatusSuperseded JobUpdateStatus = "SUPERSEDED"
+	// JobUpdateStatusHeld means the update was not applied because a freeze
+	// was in force when it reached the front of the queue — a freeze that
+	// landed in the window between detection and apply. Terminal, like FAILED,
+	// for the same reason: intent is cheap to recompute and expensive to
+	// remember, so the next diff cycle after the thaw derives it again. It is
+	// not a failure: it does not feed the flap-loop guard and does not tag a
+	// version.
+	JobUpdateStatusHeld JobUpdateStatus = "HELD"
 )
 
 // terminal reports whether a status is final.
 func (s JobUpdateStatus) terminal() bool {
 	switch s {
-	case JobUpdateStatusSucceeded, JobUpdateStatusFailed, JobUpdateStatusSuperseded:
+	case JobUpdateStatusSucceeded, JobUpdateStatusFailed, JobUpdateStatusSuperseded, JobUpdateStatusHeld:
 		return true
 	}
 	return false
@@ -277,6 +285,35 @@ func (q *UpdateQueue) PendingCount() int {
 		}
 	}
 	return n
+}
+
+// OldestNonTerminalAge returns how long the oldest update still waiting to be
+// applied (PENDING or IN_PROGRESS) has been waiting, or 0 when nothing is
+// waiting. Updates are normally applied within one --apply-interval, so a
+// growing value means the apply loop is stuck rather than busy.
+func (q *UpdateQueue) OldestNonTerminalAge(now time.Time) time.Duration {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var oldest time.Time
+	for _, u := range q.updates {
+		if u.Status.terminal() {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, u.DetectedAt)
+		if err != nil {
+			continue
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	if oldest.IsZero() {
+		return 0
+	}
+	if age := now.Sub(oldest); age > 0 {
+		return age
+	}
+	return 0
 }
 
 // prune drops the oldest terminal records beyond maxTerminalUpdates.

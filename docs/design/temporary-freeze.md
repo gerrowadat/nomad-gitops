@@ -1,7 +1,55 @@
-# Proposal: temporarily freezing a job without editing Git
+# Design: temporarily freezing a job without editing Git
 
-**Status**: draft
-**Date**: 2026-10-14
+**Status**: implemented — Unreleased. Shipped close to as proposed: a per-job
+freeze record in Nomad Variables, holding `REGISTER`, `DEREGISTER` and
+`REVERT`; optional expiry with indefinite freezes permitted and alerted on;
+read-only by default with the write API behind `--enable-freeze-api`; drift
+alerts deliberately not suppressed for a frozen job. One substantive change —
+fail-closed was narrowed to stores that have worked at least once, so the
+feature cannot break an upgrade.
+**Date**: 2026-10-14 (proposed) · implemented 2026-10-15
+
+> This records the reasoning behind the shipped freeze mechanism. It was
+> written as a proposal and is kept largely as written, because the design did
+> not move much in implementation. Where it did, it is noted inline. The
+> divergences worth knowing:
+>
+> - **The applier refreshes the whole freeze view per drain, not one record
+>   per write.** The proposal said the applier "re-reads the job's freeze state
+>   immediately before the write". As shipped, `drainUpdates` refreshes the
+>   entire view once before draining, and only when the queue is non-empty, so
+>   an idle applier makes no API calls. Same guarantee, one API call instead of
+>   one per update.
+> - **`NewFreezeRecord` is exported.** `FreezeStore` is an exported interface,
+>   so an alternative backend needs a way to build records with the parsed
+>   times `Classify` works from.
+> - **Two config validations were added** that the proposal did not name:
+>   the freeze prefix is checked against Nomad's own Variable-path pattern at
+>   startup, and `--enable-freeze-api` is refused without `--api-key` (the
+>   endpoints live under `/api/v1/`, which is not served without a key) or
+>   without a prefix.
+> - **The console also shows the age of the oldest pending update**, which the
+>   proposal listed under the freeze work but which is not freeze-specific.
+>   The matching alert (`NomadGitopsUpdatesNotDraining`) shipped ahead of this
+>   feature.
+> - **Fail-closed was narrowed to "has worked at least once".** This is the one
+>   substantive change. The proposal had applies held whenever the freeze view
+>   could not be trusted, *including* before the first successful read. That
+>   would have been a breaking change on upgrade: freeze support is on by
+>   default and needs a Nomad Variables ACL grant that the previously
+>   documented policy does not include, so every existing deployment would have
+>   stopped applying on upgrade until its policy was widened — a new safety
+>   control taking out the thing it was meant to protect. As shipped, a store
+>   that has **never** been readable honours no freezes and holds nothing
+>   (loudly); a store that worked and then stopped still fails closed, which is
+>   the case where someone may actually be relying on a freeze. The hole this
+>   leaves — a freeze written by hand on a deployment whose ACL has never
+>   worked is silently not honoured — is accepted, visible in
+>   `store_healthy` and the freeze listing, and judged much smaller than
+>   breaking every upgrade.
+>
+> The operator-facing guide is [Freezing a job](../freezing.md); this document
+> is the "why".
 
 ## Background
 
@@ -257,7 +305,7 @@ enqueue and apply, and that window is exactly when an operator reaching for a
 freeze most needs it to work. So the applier re-reads the job's freeze state
 immediately before the write — the same "recheck live state immediately before
 the call" discipline that
-[`change-checkpointing.md`](change-checkpointing.md) requires for deregister
+[`change-checkpointing.md`](../proposals/change-checkpointing.md) requires for deregister
 safety. A freeze found here needs a queue status, and none of the existing five
 fits: it is not a failure, nothing superseded it, and leaving it `PENDING`
 would spin `drainUpdates` forever on a `NextPending` that never clears. This
@@ -293,9 +341,15 @@ because of an ACL error is a broken safety control, so the read path fails
   nomad-gitops **holds all applies** — every enqueue is `blocked_frozen` with a
   reason naming the stale store — and the condition is alerted as critical.
   Detection carries on reporting drift throughout.
-- Before the first successful read after startup, applies are held. The first
-  read is sequenced before the first drain, so in practice this is invisible;
-  if the store is unreachable at startup it is immediately loud.
+- **A store that has never once been readable holds nothing.** *(Changed in
+  implementation — the proposal said applies are held before the first
+  successful read. See the revision note below.)* Freeze support is on by
+  default, so a deployment whose ACL policy predates it would otherwise have
+  every apply stopped by a feature it is not using. Nobody can be relying on a
+  freeze nomad-gitops has never been able to see. The condition is loud instead:
+  an ERROR at startup (logged once), a rising error counter,
+  `store_healthy: false`, a console line saying freezes are not being honoured,
+  and `NomadGitopsFreezeStoreErrors`.
 - A single record that is unreadable or malformed (no `reason`, unparseable
   `expires_at`, a `job` item that disagrees with its own slug) is treated as an
   **indefinite freeze on the job it appears to name**, and alerted. This is the
@@ -719,7 +773,7 @@ reasoning is in [New alert rules](#new-alert-rules).
 ## Implementation shape
 
 A small interface, for the same reason
-[`change-checkpointing.md`](change-checkpointing.md) wants one — so the differ
+[`change-checkpointing.md`](../proposals/change-checkpointing.md) wants one — so the differ
 does not know or care which backend is behind it, and tests do not need a live
 Nomad:
 
@@ -750,34 +804,22 @@ Nothing here needs a change to `NomadJobsClient`: Variables are a separate
 client namespace (`client.Variables()`), so the freeze store takes the
 `*nomadapi.Client` directly and the jobs interface stays about jobs.
 
-### When this is implemented
+### Where the code lives
 
-Per the repo's rules, the feature's own PR carries all of this:
+- `internal/nomad/freeze.go` — the record type and its states, the
+  `FreezeStore` interface, the Nomad Variables backend, the differ's cached
+  view, the fail-closed rule, and the mutation path.
+- `internal/nomad/differ.go` — `ApplyActionFrozen`, the freeze gates in
+  `decideApplyAction` and `decideDeregisterAction`, the per-cycle refresh
+  ahead of the Raft-index skip, and the metrics.
+- `internal/nomad/applier.go` — the pre-write recheck and `HELD`.
+- `internal/nomad/rollback.go` — the revert gate.
+- `internal/server/` — `GET /api/v1/freezes`, the gated write endpoints, the
+  `/healthz` fields, and the console's frozen and expired-record tables.
 
-- `git mv docs/proposals/temporary-freeze.md docs/design/temporary-freeze.md`,
-  retitled `# Design: temporarily freezing a job`, with a status note saying
-  what shipped, in which release, and where it diverged — leaving any deferred
-  parts (see below) behind in `docs/proposals/`.
-- The six flags and their env vars in [`configuration.md`](../configuration.md).
-- The new `apply_action` reason in
-  [`applying-changes.md`](../applying-changes.md), and `HELD` in the status
-  list there and in the `CLAUDE.md` vocabulary table.
-- The metrics table and a freeze section in [`monitoring.md`](../monitoring.md);
-  the recording and alert rules into `monitoring/`.
-- The endpoints in [`json-api.md`](../json-api.md) and the ACL policy in
-  [`setup/nomad-access.md`](../setup/nomad-access.md).
-- A [`faq.md`](../faq.md) entry ("I froze a job and it still shows as drifting
-  / still alerted — why?", and "Nomad reverted my frozen job anyway" for
-  `auto_revert`), and a [`use-cases.md`](../use-cases.md) recipe for the
-  incident flow.
-- Tests: the gate at both enqueue and drain, `HELD`, expiry boundaries,
-  malformed records, the slug/`job`-item encoding and its collision case,
-  fail-closed and `--freeze-fail-open`, the staleness hold, API auth and the
-  `--enable-freeze-api` 501, and the UI rendering of each record state.
-- `meta-keys.md` needs **no** change: this adds no meta key, deliberately.
-
-No existing meta key, flag default, or diff behaviour changes, so there is
-nothing here that alters behaviour for a deployment that does not use it.
+`meta-keys.md` needed **no** change: this adds no meta key, deliberately. No
+existing meta key, flag default, or diff behaviour changed, so a deployment
+that does not use freezes behaves exactly as it did before.
 
 ---
 
@@ -807,7 +849,7 @@ nothing here that alters behaviour for a deployment that does not use it.
   case it was built for, and a tool that can freeze itself out of writing is a
   larger behavioural change than this proposal wants to make. Deliberately out
   of scope.
-- **Shared prefix with checkpointing.** [`change-checkpointing.md`](change-checkpointing.md)
+- **Shared prefix with checkpointing.** [`change-checkpointing.md`](../proposals/change-checkpointing.md)
   proposes `nomad/jobs/gitops/checkpoints/` and asks whether the prefix should
   be configurable. If both land, a single `--nomad-variable-prefix` with
   `freezes/` and `checkpoints/` beneath it is probably better than two
