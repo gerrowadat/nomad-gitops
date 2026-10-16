@@ -5,7 +5,7 @@
 > `nomad_botherer_*` metric names, because that is what those releases actually
 > shipped.
 
-## v1.2.0 — 2026-10-15
+## v1.2.0 — 2026-10-16
 
 Adds freezes: a temporary, per-job hold on applying changes, set without
 editing Git. Everything is additive and all existing defaults are unchanged —
