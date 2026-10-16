@@ -42,7 +42,32 @@ func startNomadDocker(version string) (addr string, cleanup func(), err error) {
 // startNomadDockerWithConfig is startNomadDocker with an extra HCL config
 // fragment appended to the agent config (e.g. `acl { enabled = true }`). An
 // empty fragment is equivalent to startNomadDocker.
+//
+// Startup is attempted more than once because the ports are chosen by
+// freePorts, which has an inherent TOCTOU race: another process can take one
+// between the probe and the agent binding it. With host networking that is
+// not a clean failure — Nomad binds HTTP first, so it can answer
+// /v1/agent/self and *then* exit on the RPC or serf bind, which shows up much
+// later as "connection reset by peer" in whichever test happens to be running.
+// Retrying with fresh ports turns that into a non-event.
 func startNomadDockerWithConfig(version, extraConfig string) (addr string, cleanup func(), err error) {
+	const attempts = 3
+	for i := 0; i < attempts; i++ {
+		addr, cleanup, err = startNomadDockerOnce(version, extraConfig)
+		if err == nil {
+			return addr, cleanup, nil
+		}
+		if i < attempts-1 {
+			// Fresh ports on the next attempt; a brief pause lets whatever
+			// took the port finish with it.
+			time.Sleep(time.Second)
+		}
+	}
+	return "", nil, fmt.Errorf("starting Nomad %s after %d attempts: %w", version, attempts, err)
+}
+
+// startNomadDockerOnce is a single startup attempt.
+func startNomadDockerOnce(version, extraConfig string) (addr string, cleanup func(), err error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return "", nil, fmt.Errorf("docker not in PATH: %w", err)
 	}
@@ -94,7 +119,42 @@ func startNomadDockerWithConfig(version, extraConfig string) (addr string, clean
 		return "", nil, fmt.Errorf("waiting for Nomad: %w\ncontainer logs:\n%s", err, logs)
 	}
 
+	// Answering once is not the same as being up: see the TOCTOU note above.
+	// Confirm the agent is still alive a moment later, so a doomed agent is
+	// reported here — where the error names the cause and the caller can
+	// retry — rather than as a connection reset inside an unrelated test.
+	if err := confirmNomadStable(addr, containerID); err != nil {
+		logs, _ := exec.Command("docker", "logs", "--tail", "40", containerID).CombinedOutput()
+		cleanup()
+		return "", nil, fmt.Errorf("Nomad became ready then stopped: %w\ncontainer logs:\n%s", err, logs)
+	}
+
 	return addr, cleanup, nil
+}
+
+// confirmNomadStable checks that an agent which just answered is still
+// running and still answering a second later.
+func confirmNomadStable(addr, containerID string) error {
+	time.Sleep(time.Second)
+
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID).Output()
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("container exited after becoming ready (usually a port taken between probe and bind)")
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(addr + "/v1/agent/self")
+	if err != nil {
+		return fmt.Errorf("agent stopped answering: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusForbidden {
+		return fmt.Errorf("agent answered %d on re-probe", resp.StatusCode)
+	}
+	return nil
 }
 
 // buildDockerRunArgs returns the argument slice for "docker run" to start a

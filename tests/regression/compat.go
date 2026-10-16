@@ -51,6 +51,34 @@ type VersionRecord struct {
 //  3. Update docs/nomad-versions.md.
 var TestedVersions = []VersionRecord{
 	{
+		NomadVersion:  "2.0.7",
+		GitopsRelease: "v1.2.0",
+		TestedAt:      time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+		Notes:         "Freezes: the suite exercises the Nomad Variables API end to end.",
+	},
+	{
+		NomadVersion:  "1.11.3",
+		GitopsRelease: "v1.2.0",
+		TestedAt:      time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+		Notes:         "Freezes: the suite exercises the Nomad Variables API end to end. One infrastructure flake on the first run (Nomad answered then exited on a port race); fixed in the suite and green on a clean re-run.",
+	},
+	{
+		NomadVersion:  "1.10.5",
+		GitopsRelease: "v1.2.0",
+		TestedAt:      time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+		Notes:         "Freezes: the suite exercises the Nomad Variables API end to end.",
+	},
+	{
+		NomadVersion:  "1.9.7",
+		GitopsRelease: "v1.2.0",
+		TestedAt:      time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
+		Passed:        true,
+		Notes:         "Freezes: the suite exercises the Nomad Variables API end to end.",
+	},
+	{
 		NomadVersion:  "2.0.4",
 		GitopsRelease: "v1.1.0",
 		TestedAt:      time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),

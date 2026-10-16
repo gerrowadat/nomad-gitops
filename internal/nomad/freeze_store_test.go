@@ -416,3 +416,24 @@ func TestVariableFreezeStore_DeleteMissingIsNotAnError(t *testing.T) {
 		t.Errorf("deleting a record that is not there should succeed, got %v", err)
 	}
 }
+
+func TestVariableFreezeStore_DeleteErrorIsReported(t *testing.T) {
+	// A delete that Nomad refuses (an ACL problem, say) must surface rather
+	// than be mistaken for "the record is gone".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "permission denied", http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := nomadapi.DefaultConfig()
+	cfg.Address = srv.URL
+	client, _ := nomadapi.NewClient(cfg)
+	var errs []string
+	store := nomad.NewNomadVariableFreezeStore(client, freezePrefix, "default", func(op string) { errs = append(errs, op) })
+
+	if err := store.Delete(context.Background(), "api-server"); err == nil {
+		t.Fatal("a refused delete must return an error")
+	}
+	if len(errs) == 0 || errs[0] != "delete" {
+		t.Errorf("a delete error should be counted, got %v", errs)
+	}
+}
