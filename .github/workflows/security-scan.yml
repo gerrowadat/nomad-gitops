@@ -44,6 +44,14 @@ jobs:
       - name: Run govulncheck
         run: govulncheck -format sarif ./... > govulncheck.sarif
 
+      - name: Remove duplicate SARIF stacks
+        run: |
+          jq '(.runs[].results[] | select(.stacks != null) | .stacks) |= unique' \
+            govulncheck.sarif > govulncheck.deduplicated.sarif
+          mv govulncheck.deduplicated.sarif govulncheck.sarif
+          jq -e 'all(.runs[].results[]?; (.stacks // []) as $stacks | ($stacks | length) == ($stacks | unique | length))' \
+            govulncheck.sarif >/dev/null
+
       - name: Upload SARIF to code scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v4

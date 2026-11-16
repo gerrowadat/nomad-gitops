@@ -58,9 +58,11 @@ schedule, independent of the regular test suite:
 
 All three upload SARIF results to the repository's **Security → Code scanning
 alerts** tab, so findings surface there rather than requiring anyone to read
-workflow logs. Dependabot's own vulnerability alerts (Settings → Code security)
-should also be enabled on the repo — that's what turns a known-CVE dependency
-into an automatic remediation PR rather than just a Security-tab alert.
+workflow logs. The govulncheck workflow removes duplicate identical call stacks
+from its SARIF output before upload, because GitHub rejects them as invalid.
+Dependabot's own vulnerability alerts (Settings → Code security) should also be
+enabled on the repo — that's what turns a known-CVE dependency into an automatic
+remediation PR rather than just a Security-tab alert.
 
 Run `govulncheck ./...` locally the same way CI does:
 
