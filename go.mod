@@ -1,6 +1,6 @@
 module github.com/gerrowadat/nomad-gitops
 
-go 1.27.1
+go 1.27.4
 
 require (
 	github.com/go-git/go-billy/v5 v5.9.2
@@ -42,7 +42,7 @@ require (
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
